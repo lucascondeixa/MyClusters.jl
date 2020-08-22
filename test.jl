@@ -91,4 +91,4 @@ end
 load_cases()
 # test_kmeans()
 # test_HCnD()
-# test_crit_RP()
+test_crit_RP()

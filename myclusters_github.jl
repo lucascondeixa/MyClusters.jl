@@ -424,7 +424,7 @@ function crit_RP(
 
             # Number of RP different than nRP
             else
-                println(string("\nAdjustments needed when nRP is ",nRP," in ",now()))
+                # println(string("\nAdjustments needed when nRP is ",nRP," in ",now()))
                 stop_aux2 = 0                           # Variable to control the next while loop
                 n_int = 0                               # Number of iterations to control the time running the while loops
                 low_pace = 0                            # Pace lower bound
@@ -433,7 +433,7 @@ function crit_RP(
                 new_pace = pace/2                       # Updated pace
                 while stop_aux2 < 1 && n_int < 1000
                     n_int += 1
-                    println(string("\npace gap is: ",pace_gap))
+                    # println(string("\npace gap is: ",pace_gap))
                     pD_aux += new_pace
                     pWS_aux -= new_pace
 
