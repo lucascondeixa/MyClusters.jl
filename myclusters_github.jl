@@ -30,8 +30,6 @@
 # using IndexedTables
 # using StatPlots
 using Distributed
-using Gurobi
-using JuMP
 @everywhere using Suppressor
 @everywhere using SharedArrays
 @everywhere using StatsBase
@@ -42,493 +40,11 @@ using JuMP
 @everywhere using DataFrames
 @everywhere using Distances
 @everywhere using CSV
-
-function wogrin2D_P(k::Int64,
-    weight::Int64,
-    a₁::Vector{Float64},
-    a₂::Vector{Float64},
-    parallel::Bool)
-    ## Clustering modelling brought by the article named "A New Approach to
-    ## Model Load Levels in Electric Power Systems With High Renewable
-    ## Penetration" by Sonja Wogrin et al. (2014)
-
-    # x: Aux Array for concatenating the DataFrame used
-    # Data: DataFrame used
-    # k: number of classes
-    # Weight: weight used to account clusters' distances
-    ### Weight = 1: dif_mean
-    ### Weight = 2: dif_min
-    ### Weight = 3: dif_max
-    # n: Number of points
-    # m: Number of dimensions
-    # dist: distances from k-centers (n,k)
-    # class: Array of classes (n)
-    # weights_ar: Dataframe of costs
-    # first: Array of first indexes
-    # k_cent: Array of first centroids
-    # costs: Array of weighted distances
-    # total_cost: Auxiliar var.
-    # total_cost_new: Auxiliar var.
-    # δ: Auxiliar paramenter
-
-    ## Initial definitions
-    n = length(a₁)                              # Number of points
-    m = 2                                       # Number of dimensions
-    dist = SharedArray(zeros(n,k))              # Array of distances (n,k)
-    costs = SharedArray(zeros(n,k))             # Array of costs (n,k)
-    first_s = sample(1:n,k,replace=false)       # Sampling the first centroids
-    k_cent = hcat(a₁,a₂)[first_s,:]             # First centroids
-    class = zeros(Int64, n)                     # Array of classes (n)
-    weights_ar = [zeros(n) zeros(n) zeros(n)]   # Costs array
-    Data = hcat(a₁, a₂)                         # Completing the Data with costs
-    c_use = zeros(Bool,k)                       # Array with the using status
-    total_cost = 0                              # Starting the auxiliar var.
-    total_cost_new = 1                          # Starting the auxiliar var.
-    δ = 1e-10                                   # Aux. paramenter
-    tol = 1e-12                                 # Tolerance
-    cont = 0                                    # Counter
-
-    # First cost settings (Only for 2D)
-    dif_mean = mean(Data[:,1]-Data[:,2])
-    dif_min = minimum(Data[:,1]-Data[:,2])
-    dif_max = maximum(Data[:,1]-Data[:,2])
-
-    # Defining weights
-    for i in 1:n
-        weights_ar[i,1] = abs(Data[i,1]-Data[i,2]-dif_mean+δ)
-        weights_ar[i,2] = abs(Data[i,1]-Data[i,2]-dif_min+δ)
-        weights_ar[i,3] = abs(Data[i,1]-Data[i,2]-dif_max+δ)
-    end
-
-    if parallel
-
-        #Assigning classes (parallel)
-        while total_cost != total_cost_new
-            cont = cont + 1
-            total_cost = total_cost_new
-
-            # Defining distances
-            for i in 1:n
-                @sync @distributed for j in 1:k
-                    dist[i,j] = evaluate(Euclidean(),
-                    Data[i,1:2],k_cent[j,:])
-                end
-            end
-
-            # Defining costs
-            for i in 1:n
-                @sync @distributed for j in 1:k
-                    costs[i,j] = weights_ar[i,weight]*dist[i,j]
-                end
-            end
-
-            # Defining classes
-            for i in 1:n
-                class[i] = findmin(costs[i,:])[2]
-            end
-
-            ## Classification used / unused clusters
-            for i in 1:k
-                if length(class[class[:] .== i]) == 0
-                    c_use[i] = false
-                else
-                    c_use[i] = true
-                end
-            end
-
-            # Update classes (mean for those used and 0 for the unused)
-            for j in 1:k
-                if c_use[j]
-                    k_cent[j,1] = mean(Data[class[:] .== j,:][:,1])
-                    k_cent[j,2] = mean(Data[class[:] .== j,:][:,2])
-                else
-                    k_cent[j,1] = mean(Data[:,:][:,1])
-                    k_cent[j,2] = mean(Data[:,:][:,2])
-                end
-            end
-
-            total_cost_new = sum(costs[i,class[i]] for i in 1:n)
-        end
-
-    else
-
-        #Assigning classes (non_parallel)
-        while total_cost != total_cost_new
-            cont = cont + 1
-            total_cost = total_cost_new
-
-            # Defining distances
-            for i in 1:n
-                for j in 1:k
-                    dist[i,j] = evaluate(Euclidean(),
-                    Data[i,1:m],k_cent[j,:])
-                end
-            end
-
-            # Defining costs
-            for i in 1:n
-                for j in 1:k
-                    costs[i,j] = weights_ar[i,weight]*dist[i,j]
-                end
-            end
-
-            # Defining classes
-            for i in 1:n
-                class[i] = findmin(costs[i,:])[2]
-            end
-
-            ## Classification used / unused clusters
-            for i in 1:k
-                if length(class[class[:] .== i]) == 0
-                    c_use[i] = false
-                else
-                    c_use[i] = true
-                end
-            end
-
-            # Update classes (mean for those used and 0 for the unused)
-            for j in 1:k
-                if c_use[j]
-                    k_cent[j,1] = mean(Data[class[:] .== j,:][:,1])
-                    k_cent[j,2] = mean(Data[class[:] .== j,:][:,2])
-                else
-                    k_cent[j,1] = mean(Data[:,:][:,1])
-                    k_cent[j,2] = mean(Data[:,:][:,2])
-                end
-            end
-
-            total_cost_new = sum(costs[i,class[i]] for i in 1:n)
-        end
-    end
-
-
-    Size_Cluster = zeros(k)
-
-    for i in 1:k
-        if c_use[i]
-            Size_Cluster[i] = length(Data[class[:] .== i,:][1])
-        else
-            Size_Cluster[i] = 0
-        end
-    end
-
-    #-------------------------------------------------------------------------------
-    ### Transition Matrix
-    #-------------------------------------------------------------------------------
-
-    N_transit = zeros(k,k)
-    from = 0
-    to = 0
-    for i in 1:n-1
-    	from = class[i]
-    	to = class[i+1]
-    	N_transit[from,to] = N_transit[from,to] + 1
-    end
-
-    return Data, class, k_cent, N_transit, first_s, c_use
-end
-
-function wogrin2D(k::Int64,
-    weight::Int64,
-    a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-    ## Clustering modelling brought by the article named "A New Approach to
-    ## Model Load Levels in Electric Power Systems With High Renewable
-    ## Penetration" by Sonja Wogrin et al. (2014)
-
-    # x: Aux Array for concatenating the DataFrame used
-    # Data: DataFrame used
-    # k: number of classes
-    # Weight: weight used to account clusters' distances
-    ### Weight = 1: dif_mean
-    ### Weight = 2: dif_min
-    ### Weight = 3: dif_max
-    # n: Number of points
-    # m: Number of dimensions
-    # dist: distances from k-centers (n,k)
-    # class: Array of classes (n)
-    # weights_ar: Dataframe of costs
-    # first: Array of first indexes
-    # k_cent: Array of first centroids
-    # costs: Array of weighted distances
-    # total_cost: Auxiliar var.
-    # total_cost_new: Auxiliar var.
-    # δ: Auxiliar paramenter
-
-    ## Initial definitions
-
-    n = length(a₁)                              # Number of points
-    m = 2                                       # Number of dimensions
-    dist = zeros(n,k)                           # Array of distances (n,k)
-    costs = zeros(n,k)                          # Array of costs (n,k)
-    first_s = sample(1:n,k,replace=false)       # Sampling the first centroids
-    k_cent = [a₁ a₂][first_s,:]                 # First centroids
-    class = zeros(Int64, n)                     # Array of classes (n)
-    weights_ar = [zeros(n) zeros(n) zeros(n)]   # Costs array
-    Data = [a₁ a₂]                              # Completing the Data with costs
-    c_use = zeros(Bool,k)                       # Array with the using status
-    total_cost = 0                              # Starting the auxiliar var.
-    total_cost_new = 1                          # Starting the auxiliar var.
-    δ = 1e-10                                   # Aux. paramenter
-    tol = 1e10                                  # Tolerance
-    cont = 0                                    # Counter
-
-    # First cost settings (Only for 2D)
-    dif_mean = mean(Data[:,1]-Data[:,2])
-    dif_min = minimum(Data[:,1]-Data[:,2])
-    dif_max = maximum(Data[:,1]-Data[:,2])
-
-    # Defining weights
-    for i in 1:n
-        weights_ar[i,1] = abs(Data[i,1]-Data[i,2]-dif_mean+δ)
-        weights_ar[i,2] = abs(Data[i,1]-Data[i,2]-dif_min+δ)
-        weights_ar[i,3] = abs(Data[i,1]-Data[i,2]-dif_max+δ)
-    end
-
-    #Assigning classes (non_parallel)
-    while total_cost != total_cost_new
-        cont = cont + 1
-        if cont > tol
-            println("\n Does not converge! \n")
-        end
-
-        total_cost = total_cost_new
-
-        # Defining distances
-        for i in 1:n
-            for j in 1:k
-                dist[i,j] = evaluate(Euclidean(),
-                Data[i,1:m],k_cent[j,:])
-            end
-        end
-
-        # Defining costs
-        for i in 1:n
-            for j in 1:k
-                costs[i,j] = weights_ar[i,weight]*dist[i,j]
-            end
-        end
-
-        # Defining classes
-        for i in 1:n
-            class[i] = findmin(costs[i,:])[2]
-        end
-
-        ## Classification used / unused clusters
-        for i in 1:k
-            if length(class[class[:] .== i]) == 0
-                c_use[i] = false
-            else
-                c_use[i] = true
-            end
-        end
-
-        # Update classes (mean for those used and 0 for the unused)
-        for j in 1:k
-            if c_use[j]
-                k_cent[j,1] = mean(a₁[class[:] .== j])
-                k_cent[j,2] = mean(a₂[class[:] .== j])
-            else
-                k_cent[j,1] = mean(a₁)
-                k_cent[j,2] = mean(a₂)
-            end
-        end
-
-        total_cost_new = sum(costs[i,class[i]] for i in 1:n)
-    end
-
-    Size_Cluster = zeros(k)
-
-    for i in 1:k
-        if c_use[i]
-            Size_Cluster[i] = length(Data[class[:] .== i,:][:,1])
-        else
-            Size_Cluster[i] = 0
-        end
-    end
-
-    #-------------------------------------------------------------------------------
-    ### Transition Matrix
-    #-------------------------------------------------------------------------------
-
-    N_transit = zeros(k,k)
-    from = 0
-    to = 0
-    for i in 1:n-1
-    	from = class[i]
-    	to = class[i+1]
-    	N_transit[from,to] = N_transit[from,to] + 1
-    end
-
-    return Data, class, k_cent, N_transit, first_s, c_use
-end
-
-function wogrin2D_new(k::Int64,
-    weight::Int64,
-    a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-    ## Clustering modelling brought by the article named "A New Approach to
-    ## Model Load Levels in Electric Power Systems With High Renewable
-    ## Penetration" by Sonja Wogrin et al. (2014)
-
-    # x: Aux Array for concatenating the DataFrame used
-    # Data: DataFrame used
-    # k: number of classes
-    # Weight: weight used to account clusters' distances
-    ### Weight = 1: dif_mean
-    ### Weight = 2: dif_min
-    ### Weight = 3: dif_max
-    # n: Number of points
-    # m: Number of dimensions
-    # dist: distances from k-centers (n,k)
-    # class: Array of classes (n)
-    # weights_ar: Dataframe of costs
-    # first: Array of first indexes
-    # k_cent: Array of first centroids
-    # costs: Array of weighted distances
-    # total_cost: Auxiliar var.
-    # total_cost_new: Auxiliar var.
-    # δ: Auxiliar paramenter
-
-    ## Initialization
-
-    n = length(a₁)                              # Number of points
-    m = 2                                       # Number of dimensions
-    Data = [a₁ a₂]                              # Completing the Data with costs
-    weights_ar = [zeros(n) zeros(n) zeros(n)]   # Costs array
-    δ = 1e-10                                   # Aux. paramenter
-    tol = 1e10                                  # Tolerance
-    class_ret = Array{Float64}(undef,n,n)       # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,2)    # Output (2)
-    times_ret = Array{Float64}(undef,n)         # Output (3)
-    # N_transit_ret = Array{Float64}(undef,n,n,n) # Output (4)
-    first_s_ret = Array{Float64}(undef,n,n)   # Output (5)
-
-    # First cost settings (Only for 2D)
-    dif_mean = mean(Data[:,1]-Data[:,2])
-    dif_min = minimum(Data[:,1]-Data[:,2])
-    dif_max = maximum(Data[:,1]-Data[:,2])
-
-    # Defining weights
-    for i in 1:n
-        weights_ar[i,1] = abs(Data[i,1]-Data[i,2]-dif_mean+δ)
-        weights_ar[i,2] = abs(Data[i,1]-Data[i,2]-dif_min+δ)
-        weights_ar[i,3] = abs(Data[i,1]-Data[i,2]-dif_max+δ)
-    end
-
-    for l in 1:k
-        texec = now()
-        # println("l is: $l / $texec")
-
-        tini = time()
-
-
-        ## Initial definitions
-        dist = zeros(n,l)                           # Array of distances (n,k)
-        costs = zeros(n,l)                          # Array of costs (n,k)
-        first_s = sample(1:n,l,replace=false)       # Sampling the first centroids
-        k_cent = [a₁ a₂][first_s,:]                 # First centroids
-        class = zeros(Int64, n)                     # Array of classes (n)
-        c_use = zeros(Bool,l)                       # Array with the using status
-        total_cost = 0                              # Starting the auxiliar var.
-        total_cost_new = 1                          # Starting the auxiliar var.
-        cont = 0                                    # Counter
-
-        #Assigning classes (non_parallel)
-        while total_cost != total_cost_new
-            cont = cont + 1
-            if cont > tol
-                println("\n Does not converge in l = $l \n")
-            end
-
-            total_cost = total_cost_new
-
-            # Defining distances
-            for i in 1:n
-                for j in 1:l
-                    dist[i,j] = evaluate(Euclidean(),
-                    Data[i,1:m],k_cent[j,:])
-                end
-            end
-
-            # Defining costs
-            for i in 1:n
-                for j in 1:l
-                    costs[i,j] = weights_ar[i,weight]*dist[i,j]
-                end
-            end
-
-            # Defining classes
-            for i in 1:n
-                class[i] = findmin(costs[i,:])[2]
-            end
-
-            ## Classification used / unused clusters
-            for i in 1:l
-                if length(class[class[:] .== i]) == 0
-                    c_use[i] = false
-                else
-                    c_use[i] = true
-                end
-            end
-
-            # Update classes (mean for those used and 0 for the unused)
-            for j in 1:l
-                if c_use[j]
-                    k_cent[j,1] = mean(a₁[class[:] .== j])
-                    k_cent[j,2] = mean(a₂[class[:] .== j])
-                else
-                    k_cent[j,1] = mean(a₁)
-                    k_cent[j,2] = mean(a₂)
-                end
-            end
-
-            total_cost_new = sum(costs[i,class[i]] for i in 1:n)
-        end
-
-        Size_Cluster = zeros(k)
-
-        for i in 1:l
-            if c_use[i]
-                Size_Cluster[i] = length(Data[class[:] .== i,:][:,1])
-            else
-                Size_Cluster[i] = 0
-            end
-        end
-
-        # #-------------------------------------------------------------------------------
-        # ### Transition Matrix
-        # #-------------------------------------------------------------------------------
-        #
-        # N_transit = zeros(n,n)
-        # from = 0
-        # to = 0
-        # for i in 1:n-1
-        # 	from = class[i]
-        # 	to = class[i+1]
-        # 	N_transit[from,to] = N_transit[from,to] + 1
-        # end
-
-        Δt = time() - tini
-        times_ret[l] = Δt
-
-
-        # N_transit_ret[l,:,:] = N_transit
-        class_ret[l,:] = class
-        k_cent_ret[l,1:l,:] = k_cent
-        first_s_ret[l,1:l] = first_s
-
-    end
-
-    class_ret[n,:] = collect(1:n)
-
-    return class_ret, times_ret, first_s_ret
-
-end
-
-function wogrin3D_new(k::Int64,
+@everywhere using Random
+
+### Kmeans algorithm
+function kmeans3D(seed::Bool,
+    k::Int64,
     weight::Int64,
     a₁::Vector{Float64},
     a₂::Vector{Float64},
@@ -569,7 +85,7 @@ function wogrin3D_new(k::Int64,
     k_cent_ret = Array{Float64}(undef,n,n,3)        # Output (2)
     times_ret = Array{Float64}(undef,n)             # Output (3)
     # N_transit_ret = Array{Float64}(undef,n,n,n)   # Output (4)
-    first_s_ret = Array{Float64}(undef,n,n)       # Output (5)
+    first_s_ret = Array{Float64}(undef,n,n)         # Output (5)
 
     # First cost settings (Only for 2D)
     dif_mean = mean(Data[:,1]-Data[:,2]-Data[:,3])
@@ -584,7 +100,7 @@ function wogrin3D_new(k::Int64,
     end
 
     for l in 1:k
-        texec = now()
+        # texec = now()
         # println("l is: $l / $texec")
 
         tini = time()
@@ -592,6 +108,9 @@ function wogrin3D_new(k::Int64,
         ## Initial definitions
         dist = zeros(n,l)                           # Array of distances (n,k)
         costs = zeros(n,l)                          # Array of costs (n,k)
+        if seed
+            Random.seed!(10^6)                      # Set the seed in the case of comparison
+        end
         first_s = sample(1:n,l,replace=false)       # Sampling the first centroids
         k_cent = [a₁ a₂ a₃][first_s,:]              # First centroids
         class = zeros(Int64, n)                     # Array of classes (n)
@@ -692,795 +211,6 @@ function wogrin3D_new(k::Int64,
 
 end
 
-function wogrin2D_new_part(from::Int64,
-    k::Int64,
-    weight::Int64,
-    a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-    ## Clustering modelling brought by the article named "A New Approach to
-    ## Model Load Levels in Electric Power Systems With High Renewable
-    ## Penetration" by Sonja Wogrin et al. (2014)
-
-    # x: Aux Array for concatenating the DataFrame used
-    # Data: DataFrame used
-    # k: number of classes
-    # weight: weight used to account clusters' distances
-    #                                                   # Weight = 1: dif_mean
-    #                                                   # Weight = 2: dif_min
-    #                                                   # Weight = 3: dif_max
-    # n: Number of points
-    # m: Number of dimensions
-    # dist: distances from k-centers (n,k)
-    # class: Array of classes (n)
-    # weights_ar: Dataframe of costs
-    # first: Array of first indexes
-    # k_cent: Array of first centroids
-    # costs: Array of weighted distances
-    # total_cost: Auxiliar var.
-    # total_cost_new: Auxiliar var.
-    # δ: Auxiliar paramenter
-
-    ## Initialization
-
-    n = length(a₁)                              # Number of points
-    m = 2                                       # Number of dimensions
-    Data = [a₁ a₂]                              # Completing the Data with costs
-    weights_ar = [zeros(n) zeros(n) zeros(n)]   # Costs array
-    δ = 1e-10                                   # Aux. paramenter
-    tol = 1e10                                  # Tolerance
-    class_ret = Array{Float64}(undef,n,n)       # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,2)    # Output (2)
-    times_ret = Array{Float64}(undef,n)         # Output (3)
-    # N_transit_ret = Array{Float64}(undef,n,n,n) # Output (4)
-    first_s_ret = Array{Float64}(undef,n,n)   # Output (5)
-
-    # First cost settings (Only for 2D)
-    dif_mean = mean(Data[:,1]-Data[:,2])
-    dif_min = minimum(Data[:,1]-Data[:,2])
-    dif_max = maximum(Data[:,1]-Data[:,2])
-
-    # Defining weights
-    for i in 1:n
-        weights_ar[i,1] = abs(Data[i,1]-Data[i,2]-dif_mean+δ)
-        weights_ar[i,2] = abs(Data[i,1]-Data[i,2]-dif_min+δ)
-        weights_ar[i,3] = abs(Data[i,1]-Data[i,2]-dif_max+δ)
-    end
-
-    for l in from:k
-        texec = now()
-        # println("l is: $l / $texec")
-
-        tini = time()
-
-
-        ## Initial definitions
-        dist = zeros(n,l)                           # Array of distances (n,k)
-        costs = zeros(n,l)                          # Array of costs (n,k)
-        first_s = sample(1:n,l,replace=false)       # Sampling the first centroids
-        k_cent = [a₁ a₂][first_s,:]                 # First centroids
-        class = zeros(Int64, n)                     # Array of classes (n)
-        c_use = zeros(Bool,l)                       # Array with the using status
-        total_cost = 0                              # Starting the auxiliar var.
-        total_cost_new = 1                          # Starting the auxiliar var.
-        cont = 0                                    # Counter
-
-        #Assigning classes (non_parallel)
-        while total_cost != total_cost_new
-            cont = cont + 1
-            if cont > tol
-                println("\n Does not converge! \n")
-            end
-
-            total_cost = total_cost_new
-
-            # Defining distances
-            for i in 1:n
-                for j in 1:l
-                    dist[i,j] = evaluate(Euclidean(),
-                    Data[i,1:m],k_cent[j,:])
-                end
-            end
-
-            # Defining costs
-            for i in 1:n
-                for j in 1:l
-                    costs[i,j] = weights_ar[i,weight]*dist[i,j]
-                end
-            end
-
-            # Defining classes
-            for i in 1:n
-                class[i] = findmin(costs[i,:])[2]
-            end
-
-            ## Classification used / unused clusters
-            for i in 1:l
-                if length(class[class[:] .== i]) == 0
-                    c_use[i] = false
-                else
-                    c_use[i] = true
-                end
-            end
-
-            # Update classes (mean for those used and 0 for the unused)
-            for j in 1:l
-                if c_use[j]
-                    k_cent[j,1] = mean(a₁[class[:] .== j])
-                    k_cent[j,2] = mean(a₂[class[:] .== j])
-                else
-                    k_cent[j,1] = mean(a₁)
-                    k_cent[j,2] = mean(a₂)
-                end
-            end
-
-            total_cost_new = sum(costs[i,class[i]] for i in 1:n)
-        end
-
-        Size_Cluster = zeros(k)
-
-        for i in 1:l
-            if c_use[i]
-                Size_Cluster[i] = length(Data[class[:] .== i,:][:,1])
-            else
-                Size_Cluster[i] = 0
-            end
-        end
-
-        # #-------------------------------------------------------------------------------
-        # ### Transition Matrix
-        # #-------------------------------------------------------------------------------
-        #
-        # N_transit = zeros(n,n)
-        # from = 0
-        # to = 0
-        # for i in 1:n-1
-        # 	from = class[i]
-        # 	to = class[i+1]
-        # 	N_transit[from,to] = N_transit[from,to] + 1
-        # end
-
-        Δt = time() - tini
-        times_ret[l] = Δt
-
-
-        # N_transit_ret[l,:,:] = N_transit
-        class_ret[l,:] = class
-        k_cent_ret[l,1:l,:] = k_cent
-        first_s_ret[l,1:l] = first_s
-
-    end
-
-    class_ret[n,:] = collect(1:n)
-    k_cent_ret[n,:,:] = copy([a₁ a₂])
-
-    return class_ret, k_cent_ret, times_ret, first_s_ret
-
-end
-
-function pineda1D(k::Int64,
-	a₁::Vector{Float64})
-
-	## Clustering modelling brought by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-	### Initialization
-	n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy(a₁)					# Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	counter = 0							# Control the number of iterations
-	tol = 10^2							# Convergence tolerance
-
-	while l > k
-		counter = counter + 1
-		if counter > tol
-			println("Doesn't converge! \n")
-			return
-		end
-		#Distances matrix designation
-		for i in 1:(l-1)
-			dist[i] = 2 * length(class[class[:] .== i]) *
-					   	  length(class[class[:] .== i+1]) /
-						  (length(class[class[:] .== i]) +
-						  length(class[class[:] .== i+1])) *
-						  abs(k_cent[i] - k_cent[i+1])
-		end
-
-		# Updating the last value for the max
-		dist[l] = maximum(dist[1:l])
-
-		# min: find the minimum distances
-		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-		marker = zeros(n)					# To mark whenever the minimum occurs
-
-		##Mark as 1 whenever a minimum happens
-		for i in 1:(n-1)
-			if (class[i] in min_dist) && (class[i] != class[i+1])
-				marker[i+1] = 1
-			end
-		end
-
-		##Accounts the cumulative change in clusters order
-		c_change = 0						# Change in the number of clusters
-		for i in 1:n
-			c_change = c_change - marker[i]
-			marker[i] = c_change
-		end
-
-		##Update values
-		class[:] = class[:] + marker[:]
-
-		##Update centroids
-		for i in 1:l
-			k_cent[i] = mean(a₁[class[:] .== i])
-		end
-
-		l = l + Int(c_change)
-	end
-
-	return class, k_cent[1:l]
-end
-
-function pineda2D(k::Int64,
-	a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-	## Clustering modelling inpired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if length(a₁) != length(a₂)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy([a₁ a₂])              # Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	counter = 0							# Control the number of iterations
-
-	while l > k
-		#Distances matrix designation
-		for i in 1:(l-1)
-			dist[i] = 2 * length(class[class[:] .== i]) *
-					   	  length(class[class[:] .== i+1]) /
-						  (length(class[class[:] .== i]) +
-						  length(class[class[:] .== i+1])) *
-						  evaluate(Euclidean(),k_cent[i], k_cent[i+1])
-		end
-
-		# Updating the last value for the max
-		dist[l] = maximum(dist[1:l])
-
-		# min: find the minimum distances
-		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-		marker = zeros(n)					# To mark whenever the minimum occurs
-
-		##Mark as 1 whenever a minimum happens
-		for i in 1:(n-1)
-			if (class[i] in min_dist) && (class[i] != class[i+1])
-				marker[i+1] = 1
-			end
-		end
-
-		##Accounts the cumulative change in clusters order
-		c_change = 0						# Change in the number of clusters
-		for i in 1:n
-			c_change = c_change - marker[i]
-			marker[i] = c_change
-		end
-
-		##Update values
-		class[:] = class[:] + marker[:]
-
-		##Update centroids
-		for i in 1:l
-			k_cent[i,1] = mean(a₁[class[:] .== i])
-            k_cent[i,2] = mean(a₂[class[:] .== i])
-		end
-
-		l = l + Int(c_change)
-	end
-
-	return class, k_cent[1:l,:]
-end
-
-function pineda2D_new(k::Int64,
-	a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-	## Clustering modelling inpired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if length(a₁) != length(a₂)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy([a₁ a₂])              # Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	counter = 0							# Control the number of iterations
-    class_ret = Array{Float64}(undef,n,n)  # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,2) # Output (2)
-    times_ret = Array{Float64}(undef,n)     #Output (3)
-
-
-	for j in n:-1:k+1
-        texec = now()
-        # println("j is: $j / $texec")
-
-        tini = time()
-
-        if j == l
-
-    		#Distances matrix designation
-    		for i in 1:(l-1)
-    			dist[i] = 2 * length(class[class[:] .== i]) *
-    					   	  length(class[class[:] .== i+1]) /
-    						  (length(class[class[:] .== i]) +
-    						  length(class[class[:] .== i+1])) *
-    						  evaluate(Euclidean(),k_cent[i,:], k_cent[i+1,:])
-    		end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l])
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-    			k_cent[i,1] = mean(a₁[class[:] .== i])
-                k_cent[i,2] = mean(a₂[class[:] .== i])
-                k_cent[i,3] = mean(a₃[class[:] .== i])
-    		end
-
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-            l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-        end
-
-        Δt = time() - tini
-        times_ret[j] = Δt
-
-	end
-
-    class_ret[n,:] = collect(1:n)
-
-    return class_ret, k_cent_ret, times_ret
-end
-
-function pineda3D_new(k::Int64,
-	a₁::Array{Float64},
-    a₂::Array{Float64},
-    a₃::Array{Float64})
-
-	## Clustering modelling inpired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if size(a₁) != size(a₂) || size(a₁) != size(a₃)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁[:,1])                                 # Total number of hours
-    m = length(a₁[1,:])                                 # Number of nodes
-	class = collect(1:n)                                # Array of classes (n)
-    k_cent = zeros(n,m,3)                               # Centroids array
-	# k_cent = copy([a₁ a₂ a₃])                         # Centroids array (previous)
-	dist = zeros(n)                                     # Array of distances (n)
-	l = length(a₁[:,1])                                 # Number of clusters used
-	counter = 0                                         # Control the number of iterations
-    class_ret = Array{Float64}(undef,n,n)               # Output (1): Classes
-    k_cent_ret = Array{Float64}(undef,n,n,m,3)          # Output (2): Centroids
-    times_ret = Array{Float64}(undef,n)                 # Output (3): Running times
-    n_clusters = Array{Float64}(undef,n)                # Output (4): Number of clusters really considered
-
-    for k in 1:m
-        for i in 1:n
-            k_cent[i,k,:] = copy([a₁[i,k] a₂[i,k] a₃[i,k]])
-        end
-    end
-
-	for j in n:-1:k+1
-        texec = now()
-        # println("j is: $j / $texec")
-
-        tini = time()
-
-        if j == l
-
-    		#Distances matrix designation
-    		for i in 1:(l-1)
-    			dist[i] = 2 * length(class[class[:] .== i]) *
-    					   	  length(class[class[:] .== i+1]) /
-    						  (length(class[class[:] .== i]) +
-    						  length(class[class[:] .== i+1])) *
-    						  evaluate(Euclidean(),k_cent[i,:,:], k_cent[i+1,:,:])
-    		end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l])
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-                for k in 1:m
-        			k_cent[i,k,1] = mean(a₁[class[:] .== i,k])
-                    k_cent[i,k,2] = mean(a₂[class[:] .== i,k])
-                    k_cent[i,k,3] = mean(a₃[class[:] .== i,k])
-                end
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-            l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-        end
-
-        n_clusters[j] = class_ret[j,n]
-        Δt = time() - tini
-        times_ret[j] = Δt
-
-	end
-
-    class_ret[n,:] = collect(1:n)
-    for k in 1:m
-        k_cent_ret[n,:,k,:] = copy([a₁[:,k] a₂[:,k] a₃[:,k]])
-    end
-    n_clusters[n] = n
-    n_clusters[1] = 1
-
-    return class_ret, k_cent_ret, times_ret, n_clusters
-end
-
-
-### Hierarchical Clustering (vis Pineda) with Wasserstein Distance as the
-# indifference metric
-function HCWD3D_new(k::Int64,
-	a₁::Array{Float64},
-    a₂::Array{Float64},
-    a₃::Array{Float64})
-
-	## Clustering modelling inspired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if size(a₁) != size(a₂) || size(a₁) != size(a₃)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁[:,1])                                 # Total number of hours
-    m = length(a₁[1,:])                                 # Number of nodes
-	class = collect(1:n)                                # Array of classes (n)
-    k_cent = zeros(n,m,3)                               # Centroids array (hours, nodes, DWS)
-	# k_cent = copy([a₁ a₂ a₃])                         # Centroids array (previous)
-	dist = zeros(n)                                     # Array of distances (n)
-	l = length(a₁[:,1])                                 # Number of clusters used
-	counter = 0                                         # Control the number of iterations
-    class_ret = Array{Float64}(undef,n,n)               # Output (1): Classes
-    k_cent_ret = Array{Float64}(undef,n,n,m,3)          # Output (2): Centroids
-    times_ret = Array{Float64}(undef,n)                 # Output (3): Running times
-    n_clusters = Array{Float64}(undef,n)                # Output (4): Number of clusters really considered
-
-    for j in 1:m
-        for i in 1:n
-            k_cent[i,j,:] = copy([a₁[i,j] a₂[i,j] a₃[i,j]])
-        end
-    end
-
-	for j in n:-1:k+1
-        texec = now()
-        # println("j is: $j / $texec")
-
-        tini = time()
-
-        if j == l
-
-    		#Distances matrix designation
-    		for i in 1:(l-1)
-                ## Create a centroids aux array to deal with the aggregation to
-                ## be tested (passing thourgh each hour/cluster i)
-                k_cent_aux = copy(k_cent)
-                for i2 in 1:m, i3 in 1:3
-                    k_cent_aux[i,i2,i3] = mean([k_cent[i,i2,i3],k_cent[i+1,i2,i3]])
-                    k_cent_aux[i+1,i2,i3] = k_cent_aux[i,i2,i3]
-                end
-
-                ## Definition of what's the range of WD comparison (range_eval)
-
-                if j == 2
-                    range_eval = i:i+1
-                elseif 1 < i < l - 1
-                    range_eval = i-1:i+2
-                elseif i == 1
-                    range_eval = i:i+2
-                elseif i == l-1
-                    range_eval = i-1:i+1
-                else
-                    range_eval = i-1:i
-                end
-
-    			dist[i] = 2 * length(class[class[:] .== i]) *
-    					   	  length(class[class[:] .== i+1]) /
-    						  (length(class[class[:] .== i]) +
-    						  length(class[class[:] .== i+1])) *
-                              ## Sum of WD from the 9 dimensions
-                              EMD_3D(k_cent[range_eval,:,:], k_cent_aux[range_eval,:,:])
-    		end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l])
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-                for k in 1:m
-        			k_cent[i,k,1] = mean(a₁[class[:] .== i,k])
-                    k_cent[i,k,2] = mean(a₂[class[:] .== i,k])
-                    k_cent[i,k,3] = mean(a₃[class[:] .== i,k])
-                end
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-            l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-        end
-
-        n_clusters[j] = class_ret[j,n]
-        Δt = time() - tini
-        times_ret[j] = Δt
-
-	end
-
-    class_ret[n,:] = collect(1:n)
-    for k in 1:m
-        k_cent_ret[n,:,k,:] = copy([a₁[:,k] a₂[:,k] a₃[:,k]])
-    end
-    n_clusters[n] = n
-    n_clusters[1] = 1
-
-    return class_ret, k_cent_ret, times_ret, n_clusters
-end
-
-### Hierarchical Clustering (vis Pineda) with Maximal Distance as the
-# indifference metric
-function HCMD3D_new(k::Int64,
-	a₁::Array{Float64},
-    a₂::Array{Float64},
-    a₃::Array{Float64})
-
-	## Clustering modelling inspired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if size(a₁) != size(a₂) || size(a₁) != size(a₃)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁[:,1])                                 # Total number of hours
-    m = length(a₁[1,:])                                 # Number of nodes
-	class = collect(1:n)                                # Array of classes (n)
-    k_cent = zeros(n,m,3)                               # Centroids array (hours, nodes, DWS)
-	dist = zeros(n)                                     # Array of distances (n)
-	l = length(a₁[:,1])                                 # Number of clusters used
-	counter = 0                                         # Control the number of iterations
-    class_ret = Array{Float64}(undef,n,n)               # Output (1): Classes
-    k_cent_ret = Array{Float64}(undef,n,n,m,3)          # Output (2): Centroids
-    times_ret = Array{Float64}(undef,n)                 # Output (3): Running times
-    n_clusters = Array{Float64}(undef,n)                # Output (4): Number of clusters really considered
-
-    for j in 1:m
-        for i in 1:n
-            k_cent[i,j,:] = copy([a₁[i,j] a₂[i,j] a₃[i,j]])
-        end
-    end
-
-	for j in n:-1:k+1
-        texec = now()
-        # println("j is: $j / $texec")
-
-        tini = time()
-
-        if j == l
-            for i in 1:(l-1)
-
-                # Dist is equal to the max distance between elements belinging
-                # to the same cluster
-
-                dist[i] = max(
-
-                max(
-                maximum(a₁[class[:] .== i,:]),
-                maximum(a₁[class[:] .== i+1,:])
-                ) -
-                min(
-                minimum(a₁[class[:] .== i,:]),
-                minimum(a₁[class[:] .== i+1,:])
-                ) ,
-                max(
-                maximum(a₂[class[:] .== i,:]),
-                maximum(a₂[class[:] .== i+1,:])
-                ) -
-                min(
-                minimum(a₂[class[:] .== i,:]),
-                minimum(a₂[class[:] .== i+1,:])
-                ) ,
-                max(
-                maximum(a₃[class[:] .== i,:]),
-                maximum(a₃[class[:] .== i+1,:])
-                ) -
-                min(
-                minimum(a₃[class[:] .== i,:]),
-                minimum(a₃[class[:] .== i+1,:])
-                )
-
-                )
-            end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l])
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update classes
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-                for k in 1:m
-        			k_cent[i,k,1] = mean(a₁[class[:] .== i,k])
-                    k_cent[i,k,2] = mean(a₂[class[:] .== i,k])
-                    k_cent[i,k,3] = mean(a₃[class[:] .== i,k])
-                end
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-            l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:,:] = copy(k_cent)
-
-        end
-
-        n_clusters[j] = class_ret[j,n]
-        Δt = time() - tini
-        times_ret[j] = Δt
-
-	end
-
-    class_ret[n,:] = collect(1:n)
-    for k in 1:m
-        k_cent_ret[n,:,k,:] = copy([a₁[:,k] a₂[:,k] a₃[:,k]])
-    end
-    n_clusters[n] = n
-    n_clusters[1] = 1
-
-    return class_ret, k_cent_ret, times_ret, n_clusters
-end
-
 ### Hierarchical Clustering with both Wasserstein and Euclidean Distances as the
 # indifference metric
 function HCnD(k::Int64,
@@ -1518,7 +248,7 @@ function HCnD(k::Int64,
 
 	for j in n:-1:k+1
         texec = now()
-        # println("j is: $j / $texec")
+        println("\nj is: $j / $texec")
 
         tini = time()
 
@@ -1630,167 +360,172 @@ function HCnD(k::Int64,
 end
 
 ### Clustering using representative days/weeks and medoids from Critical Points
-function RDC_CP(RD_crit::Vector{Int64},
-    dist_m::Union{Int64,Float64},
-    a::Array{Float64}...)
+function crit_RP(
+    pD::Float64,
+    pWS::Float64,
+    D::Array{Float64},
+    W::Array{Float64},
+    S::Array{Float64},
+    nodes::Int64,
+    nRP::Int64,
+    d::Array{Int64},
+    pace::Float64,
+    max_load::Vector{Float64},
+    dem_inc::Vector{Float64}
+    )
+    #### Function made to select critical points accordingly to a minimal percentile
+    #### for demand (pD) and a maximum percentile for W + S (pWS). The algorithm
+    #### tries to find a maximum of representative periods nRP as specified in
+    #### in the input.
 
-    ## aᵢ has the size of p x q x m where m is the number of nodes, q is the
-    ## size in hours of the representative set (e.g. if representative day then
-    ## q = 24h) and p is the number of representative periods in a year (e.g.
-    ## if representative day, p = 365) in a way that p x q = 8760h.
+    ### Computing the values using the input pD / pWS
+    (range_D_ret, range_WS_ret, range_DWS_ret) = find_crit_DWS(pD,pWS,D.*max_load'.*dem_inc',W,S,nodes)
+    crit_RP_ret = unique(d[findall(x -> x > 0,range_DWS_ret[3])])  # Number of days in the original
 
-    k = length(RD_crit)                                 # Number of critical days in RD_crit
-    d = length(a)                                       # Number of dimensions (attributes, e.g. DWS = 3)
+    ### Methodology for representative days
 
-    for r in d
-        if size(a[1]) != size(a[r])
-            println("Different sizes input")
-            return
-        end
-    end
+    ### Initialization
+    pD_aux = copy(pD)                           # Percentile to find the critical points in Demand
+    pWS_aux = copy(pWS)                         # Percentile to find the critical points in WS
+    crit_RP_aux = copy(crit_RP_ret)             # Rep. periods using pD_aux and pWS_aux
+    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+    pD_hold = copy(pD_aux)
+    pWS_hold = copy(pWS_aux)
+    crit_RP_hold = copy(crit_RP_aux)
 
-	### Initialization
-	p = length(a[1][:,1,1])       # Total number of hours per repr. period (e.g. 24h)
-    q = length(a[1][1,:,1])       # Total number of periods in a year (e.g. 365 days)
-
-    if p*q != 8760
-        println("Number of periods do not represent one year")
-        return
-    end
-
-    m = length(a[1][1,1,:])                             # Number of nodes
-	class = collect(1:q)                                # Array of classes (q)
-    k_cent = zeros(p,q,m,d)                             # Centroids array [hour,day,node,DWS]
-    dist = zeros(6,q)                                   # dist[1/2,:] - distances to the borderpoints [
-    #                                                   # dist[3/4,:] - cumulative distances
-    #                                                   # dist[5,:] - total dist if the cut is done in the hour in analysis
-    #                                                   # dist[6,:] - division point [0/1]
-    class_ret = Array{Float64}(undef,q,q)               # Output (1): Classes
-    k_cent_ret = Array{Float64}(undef,p,q,m,d)          # Output (2): Centroids / Medoids
-
-    # Assign days for the extremes (i.e. before the first day and after the last)
-    # then create a neighboring fashion TS
-
-    # Update the class vector ranging from 1 to length(RD_crit) + 1:
-    # Classes = 1 (lower or equal to RD_crit[1]) or classes = length(RD_crit) +
-    # 1 (or higher than RD_crit[end]) are out of dispute. All the other
-    # Classes = i are in dispute between i - 1 and i. Ex: class = 2 are between
-    # critical day 1 and 2, and so on.
-
-    # Defining k_cent
-    for i in 1:q
-        for o in 1:m
-            for r in 1:d
-                k_cent[:,i,o,r] = copy(a[r][:,i,o])
+    # Test to see if a reduction on the nRP is needed
+    if length(crit_RP_ret) >= nRP
+        stop_aux = 0                            # Variable to stop the while loop
+        while stop_aux < 1
+            # Crop a quatile window equally reducing pWS and increasing pD
+            pD_aux = pD_aux + pace              # Increase D percentile cut
+            pWS_aux = pWS_aux - pace            # Decrease WS percentile cut
+            # Find the ranges counting with the full demand
+            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+            # Momentaneous RP
+            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
+            if length(crit_RP_aux) < nRP
+                pD_aux = pD_aux - pace
+                pWS_aux = pWS_aux + pace
+                stop_aux = 1
             end
+            # Updating the ranges after finding the first tight window for pD and pWS
+            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+            # Update RP
+            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
         end
-    end
 
-    # Days between RD_crit[i] and RD_crit[i+1]
-    arb_days = Vector{Any}(undef,length(RD_crit)-1)
-    for i in 1:length(arb_days)
-        arb_days[i] = findall(x->RD_crit[i]<x<RD_crit[i+1],collect(1:365))
-    end
+        # Adjustments in the case the pace was too high for the threshold
+        stop_aux = 0
+        while stop_aux < 1
+            # Ok
+            if length(crit_RP_aux) == nRP
+                stop_aux = 1
 
-    for i in 1:length(arb_days)
-        if length(arb_days[i]) != 0
-            for j in arb_days[i]
-                if dist_m < 2
-                    # if i==1
-                    #     println("\nEuclidean being performed")
-                    # end
-                    #Distances between the two interval's borderpoints (Euclidean)
-                    dist[1,j] = evaluate(Euclidean(),
-                    k_cent[:,j,:,:],
-                    k_cent[:,arb_days[i][1]-1,:,:])
-
-                    dist[2,j] = evaluate(Euclidean(),
-                    k_cent[:,j,:,:],
-                    k_cent[:,arb_days[i][end]+1,:,:])
-                else
-                    # if i==1
-                    #     println("\nWD being performed")
-                    # end
-                    #Distances between the two interval's borderpoints (WD)
-                    k_cent_WD_aux = copy(k_cent[:,arb_days[i][1]-1,:,:])
-                    for o in 1:m
-                        for r in 1:d
-                            k_cent_WD_aux[:,o,r] = k_cent[:,arb_days[i][1]-1,o,r].*
-                            (mean(k_cent[:,j,o,r])/mean(k_cent[:,arb_days[i][1]-1,o,r]))
-                        end
-                    end
-
-                    dist[1,j] = EMD_nD(
-                    k_cent[:,j,:,:],
-                    k_cent_WD_aux)
-
-                    k_cent_WD_aux = copy(k_cent[:,arb_days[i][end]+1,:,:])
-                    for o in 1:m
-                        for r in 1:d
-                            k_cent_WD_aux[:,o,r] = k_cent[:,arb_days[i][end]+1,o,r].*
-                            (mean(k_cent[:,j,o,r])/mean(k_cent[:,arb_days[i][end]+1,o,r]))
-                        end
-                    end
-
-                    dist[2,j] = EMD_nD(
-                    k_cent[:,j,:,:],
-                    k_cent_WD_aux)
-                end
-            end
-            for j in arb_days[i]
-                #Cumulative
-                dist[3,j] = sum(dist[1,arb_days[i][1]:j])
-                dist[4,j] = sum(dist[2,j+1:arb_days[i][end]])
-            end
-            dist[4,arb_days[i][1]-1] = sum(dist[2,arb_days[i]])
-            dist[5,arb_days[i][1]-1] = sum(dist[2,arb_days[i]])
-            dist[5,arb_days[i]] = dist[3,arb_days[i]] .+ dist[4,arb_days[i]]
-            min_aux = arb_days[i][1]-1 + findmin(dist[5,arb_days[i][1]-1:arb_days[i][end]])[2]
-            dist[6,min_aux] = 1
-        end
-    end
-
-    # Assigning class values
-    for j in 1:q
-        # If less than the first critical day, assign 1
-        if class[j] <= RD_crit[1]
-            class[j] = 1
-        # If higher than the last critical day, assign k
-        elseif class[j] >= RD_crit[end]
-            class[j] = k
-        # If it's one of the critical days
-        elseif searchsortedlast(RD_crit,j) == searchsortedfirst(RD_crit,j)
-            class[j] = searchsortedlast(RD_crit,j)
-        # All the other cases
-        else
-            ### Algorithm to assign the days
-            # i) Need to know in which interval this day is (NOTE: ok)
-            # ii) Need to calculate the distance for the bounding days (NOTE: ok)
-            # iii) Define the division point (NOTE: ok)
-            # iv) Assign classes (NOTE: ok)
-
-            if j <= arb_days[searchsortedlast(RD_crit,j)][1]-2 +
-                findmax(dist[6,arb_days[searchsortedlast(RD_crit,j)][1]-1:arb_days[searchsortedlast(RD_crit,j)][end]])[2]
-                class[j] = searchsortedlast(RD_crit,j)
+            # Number of RP different than nRP
             else
-                class[j] = searchsortedfirst(RD_crit,j)
+                println(string("\nAdjustments needed when nRP is ",nRP," in ",now()))
+                stop_aux2 = 0                           # Variable to control the next while loop
+                n_int = 0                               # Number of iterations to control the time running the while loops
+                low_pace = 0                            # Pace lower bound
+                up_pace = copy(pace)                    # Pace upper bound
+                pace_gap = up_pace - low_pace           # Pace difference to control the number of loops needed
+                new_pace = pace/2                       # Updated pace
+                while stop_aux2 < 1 && n_int < 1000
+                    n_int += 1
+                    println(string("\npace gap is: ",pace_gap))
+                    pD_aux += new_pace
+                    pWS_aux -= new_pace
+
+                    #Reassess the ranges
+                    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+                    #Recalculate RP
+                    crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
+
+                    if length(crit_RP_aux) == nRP
+                        # Now we increase the criteria being necessary to match the number of days set by nRP
+                        stop_aux2 = 1
+
+                    else
+                        println(" / Crit_days = ",length(crit_RP_aux))
+                        # Back to the last step
+                        pD_aux -= new_pace
+                        pWS_aux += new_pace
+
+                        if length(crit_RP_aux) > nRP
+                            low_pace = copy(new_pace)
+                            new_pace += (up_pace-new_pace)/2
+                        else
+                            up_pace = copy(new_pace)
+                            new_pace -= (new_pace-low_pace)/2
+                        end
+                    end
+                    pace_gap = up_pace - low_pace           # Pace difference to control the number of loops needed
+                end
+                stop_aux = 1
+            end
+
+        end
+
+        if length(crit_RP_aux) != nRP
+            println("\nNumber of days still not the same as nRP")
+            pD_hold = pD_aux + up_pace
+            pWS_hold = pWS_aux - up_pace
+            (range_D_hold, range_WS_hold, range_DWS_hold) = find_crit_DWS(pD_hold,pWS_hold,D.*max_load'.*dem_inc',W,S,nodes)
+            crit_RP_hold = unique(d[findall(x -> x > 0,range_DWS_hold[3])])
+        else
+            pD_hold = copy(pD_aux)
+            pWS_hold = copy(pWS_aux)
+            (range_D_hold, range_WS_hold, range_DWS_hold) = find_crit_DWS(pD_hold,pWS_hold,D.*max_load'.*dem_inc',W,S,nodes)
+            crit_RP_hold = unique(d[findall(x -> x > 0,range_DWS_hold[3])])
+        end
+
+        ## Controlling if number of RP is higher than specified
+        if length(crit_RP_hold) > nRP
+            crit_RP_hold = copy(crit_RP_hold[1:nRP])
+        end
+
+        # Trying to decrease W+S percentile
+        stop_aux = 0
+        while stop_aux < 1
+            # Update pD
+            pD_aux = pD_aux + pace
+            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
+            if length(crit_RP_aux) != length(crit_RP_hold)
+                pD_aux = pD_aux - pace
+                stop_aux = 1
+            end
+        end
+
+        # Trying to increase the Demand percentile
+        stop_aux = 0
+        while stop_aux < 1
+            # Update pWS
+            pWS_aux = pWS_aux - pace
+            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
+            if length(crit_RP_aux) != length(crit_RP_hold)
+                pWS_aux = pWS_aux + pace
+                stop_aux = 1
             end
         end
     end
 
-    # Defining k_cent_ret
-    for i in 1:q
-        for o in 1:m
-            for r in 1:d
-                k_cent_ret[:,i,o,r] = copy(a[r][:,RD_crit[class[i]],o])
-            end
-        end
+    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
+    crit_RP_aux_ret = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
+
+    # Return with the percentiles used
+    range_D_aux_ret = range_D_aux
+    range_WS_aux_ret = range_WS_aux
+    range_DWS_aux_ret = range_DWS_aux
+
+    if crit_RP_hold != crit_RP_aux_ret
+        println("\n Diferent RP! Check code. \n")
     end
 
-    ##Classes with full resolution
-    class_ret = copy(class)
-
-    return class_ret, k_cent_ret
+    return range_D_ret, range_WS_ret, range_DWS_ret, crit_RP_ret,
+    range_D_aux_ret, range_WS_aux_ret, range_DWS_aux_ret, crit_RP_aux_ret
 end
 
 ### Clustering using representative days/weeks and medoids
@@ -1841,7 +576,7 @@ function RDC3D_new(k::Int64,
 
     for j in q:-1:k+1
         texec = now()
-        # println("Number of representative days: $j / $texec")
+        println("Number of representative days: $j / $texec")
         tini = time()
 
         if j == l
