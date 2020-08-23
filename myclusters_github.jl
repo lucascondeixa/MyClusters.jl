@@ -42,6 +42,16 @@ using Distributed
 @everywhere using CSV
 @everywhere using Random
 
+# Type for arcs (i,j)
+struct Arc
+    i::Int64  # Start node of arc (i,j)
+    j::Int64  # End node of arc (i,j)
+end
+
+################################################################################
+####################            TESTED FUNCTIONS            ####################
+################################################################################
+
 ### Kmeans algorithm
 function kmeans3D(seed::Bool,
     k::Int64,
@@ -248,7 +258,7 @@ function HCnD(k::Int64,
 
 	for j in n:-1:k+1
         texec = now()
-        println("\nj is: $j / $texec")
+        # println("\nj is: $j / $texec")
 
         tini = time()
 
@@ -528,6 +538,45 @@ function crit_RP(
     range_D_aux_ret, range_WS_aux_ret, range_DWS_aux_ret, crit_RP_aux_ret
 end
 
+### Find critical points (p-percentile)
+function find_crit_DWS(
+    pD::Float64,
+    pWS::Float64,
+    D::Array{Float64},
+    W::Array{Float64},
+    S::Array{Float64},
+    nodes::Int64
+    )
+    # pD: Percentile for controlling the worst cases of demand
+    # pWS: Percentile for controlling the worst cases of WS
+    # D/W/S: Series
+    # RP: use of rep. days analysis?
+    # nRP: Number of representative days needed
+    # d: Days array
+    # nodes: # of nodes
+
+    # Error control (probability space)
+    if ~(0 <= pD <= 1 && 0 <= pWS <= 1)
+        println("Error in probability space!")
+        return
+    end
+    # Creating ranges accordingly to percentiles given
+    range_WS = sum(W[:,i] .+ S[:,i] for i in 1:nodes) .<= quantile(sum(W[:,i] .+ S[:,i] for i in 1:nodes),pWS)
+    range_D = sum(D[:,i] for i in 1:nodes) .>= quantile(sum(D[:,i] for i in 1:nodes),pD)
+    range_DWS = (range_D .* range_WS) .> 0
+
+    # Return with the percentiles used
+    range_D_ret = (pD,range_D)
+    range_WS_ret = (pWS,range_WS)
+    range_DWS_ret = (pD, pWS, range_DWS)
+
+    return range_D_ret, range_WS_ret, range_DWS_ret
+end
+
+################################################################################
+###################            UNTESTED FUNCTIONS            ###################
+################################################################################
+
 ### Clustering using representative days/weeks and medoids
 function RDC3D_new(k::Int64,
 	a₁::Array{Float64},
@@ -724,11 +773,6 @@ function wassdist2D(from::Array{Float64},
     return out
 end
 
-# Type for arcs (i,j)
-struct Arc
-    i::Int64  # Start node of arc (i,j)
-    j::Int64  # End node of arc (i,j)
-end
 
 ### Compute Wass. Dist in nD series
 function wassdist_new(from::Array{Float64},
@@ -2939,227 +2983,6 @@ end
 ### NOTE: Data-driven functions
 ################################################################################
 
-### Find critical points (p-percentile)
-function find_crit_DWS(
-    pD::Float64,
-    pWS::Float64,
-    D::Array{Float64},
-    W::Array{Float64},
-    S::Array{Float64},
-    nodes::Int64
-    )
-    # pD: Percentile for controlling the worst cases of demand
-    # pWS: Percentile for controlling the worst cases of WS
-    # D/W/S: Series
-    # RP: use of rep. days analysis?
-    # nRP: Number of representative days needed
-    # d: Days array
-    # nodes: # of nodes
-
-    # Error control (probability space)
-    if ~(0 <= pD <= 1 && 0 <= pWS <= 1)
-        println("Error in probability space!")
-        return
-    end
-    # Creating ranges accordingly to percentiles given
-    range_WS = sum(W[:,i] .+ S[:,i] for i in 1:nodes) .<= quantile(sum(W[:,i] .+ S[:,i] for i in 1:nodes),pWS)
-    range_D = sum(D[:,i] for i in 1:nodes) .>= quantile(sum(D[:,i] for i in 1:nodes),pD)
-    range_DWS = (range_D .* range_WS) .> 0
-
-    # Return with the percentiles used
-    range_D_ret = (pD,range_D)
-    range_WS_ret = (pWS,range_WS)
-    range_DWS_ret = (pD, pWS, range_DWS)
-
-    return range_D_ret, range_WS_ret, range_DWS_ret
-end
-
-### Generate
-function crit_RP(
-    pD::Float64,
-    pWS::Float64,
-    D::Array{Float64},
-    W::Array{Float64},
-    S::Array{Float64},
-    nodes::Int64,
-    nRP::Int64,
-    d::Array{Int64},
-    pace::Float64,
-    max_load::Vector{Float64},
-    dem_inc::Vector{Float64}
-    )
-    #### Function made to select critical points accordingly to a minimal percentile
-    #### for demand (pD) and a maximum percentile for W + S (pWS). The algorithm
-    #### tries to find a maximum of representative periods nRP as specified in
-    #### in the input.
-
-    ### Computing the values using the input pD / pWS
-    (range_D_ret, range_WS_ret, range_DWS_ret) = find_crit_DWS(pD,pWS,D.*max_load'.*dem_inc',W,S,nodes)
-    crit_RP_ret = unique(d[findall(x -> x > 0,range_DWS_ret[3])])  # Number of days in the original
-
-    ### Methodology for representative days
-
-    ### Initialization
-    pD_aux = copy(pD)                           # Percentile to find the critical points in Demand
-    pWS_aux = copy(pWS)                         # Percentile to find the critical points in WS
-    crit_RP_aux = copy(crit_RP_ret)             # Rep. periods using pD_aux and pWS_aux
-    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-
-    # Test to see if a reduction on the nRP is needed
-    if length(crit_RP_ret) >= nRP
-        stop_aux = 0                            # Variable to stop the while loop
-        while stop_aux < 1
-            # Crop a quatile window equally reducing pWS and increasing pD
-            pD_aux = pD_aux + pace              # Increase D percentile cut
-            pWS_aux = pWS_aux - pace            # Decrease WS percentile cut
-            # Find the ranges counting with the full demand
-            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            # Momentaneous RP
-            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-            if length(crit_RP_aux) < nRP
-                pD_aux = pD_aux - pace
-                pWS_aux = pWS_aux + pace
-                stop_aux = 1
-            end
-            # Updating the ranges after finding the first tight window for pD and pWS
-            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            # Update RP
-            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-        end
-
-        # Adjustments in the case the pace was too high for the threshold
-        stop_aux = 0
-        while stop_aux < 1
-            # Ok
-            if length(crit_RP_aux) == nRP
-                stop_aux = 1
-
-            # Number of RP different than nRP
-            else
-                println(string("\nAdjustments needed when nRP is ",nRP," in ",now()))
-                stop_aux2 = 0                           # Variable to control the next while loop
-                n_int = 0                               # Number of iterations to control the time running the while loops
-                low_pace = 0                            # Pace lower bound
-                up_pace = copy(pace)                    # Pace upper bound
-                pace_gap = up_pace - low_pace           # Pace difference to control the number of loops needed
-                new_pace = pace/2                       # Updated pace
-                while stop_aux2 < 1 && n_int < 1000
-                    n_int += 1
-                    println(string("\npace gap is: ",pace_gap))
-                    pD_aux += new_pace
-                    pWS_aux -= new_pace
-
-                    #Reassess the ranges
-                    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-                    #Recalculate RP
-                    crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-
-                    if length(crit_RP_aux) == nRP
-                        # Now we increase the criteria being necessary to match the number of days set by nRP
-                        stop_aux2 = 1
-
-                    else
-                        println(" / Crit_days = ",length(crit_RP_aux))
-                        # Back to the last step
-                        pD_aux -= new_pace
-                        pWS_aux += new_pace
-
-                        if length(crit_RP_aux) > nRP
-                            low_pace = copy(new_pace)
-                            new_pace += (up_pace-new_pace)/2
-                        else
-                            up_pace = copy(new_pace)
-                            new_pace -= (new_pace-low_pace)/2
-                        end
-                    end
-                    pace_gap = up_pace - low_pace           # Pace difference to control the number of loops needed
-                end
-                stop_aux = 1
-            end
-
-        end
-
-        if length(crit_RP_aux) != nRP
-            println("\nNumber of days still not the same as nRP")
-
-            # # Generate days when the pace is equal to the upper bound
-            # pD_aux += up_pace
-            # pWS_aux -= up_pace
-            # #Reassess the ranges
-            # (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            # #Recalculate RP
-            # crit_RP_aux_up = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-            # pD_aux -= up_pace
-            # pWS_aux += up_pace
-            #
-            # # Generate days when the pace is equal to the lower bound
-            # pD_aux += low_pace
-            # pWS_aux -= low_pace
-            # #Reassess the ranges
-            # (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            # #Recalculate RP
-            # crit_RP_aux_low = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-            # pD_aux -= low_pace
-            # pWS_aux += low_pace
-
-            pD_hold = pD_aux + up_pace
-            pWS_hold = pWS_aux - up_pace
-            (range_D_hold, range_WS_hold, range_DWS_hold) = find_crit_DWS(pD_hold,pWS_hold,D.*max_load'.*dem_inc',W,S,nodes)
-            crit_RP_hold = unique(d[findall(x -> x > 0,range_DWS_hold[3])])
-        else
-            pD_hold = copy(pD_aux)
-            pWS_hold = copy(pWS_aux)
-            (range_D_hold, range_WS_hold, range_DWS_hold) = find_crit_DWS(pD_hold,pWS_hold,D.*max_load'.*dem_inc',W,S,nodes)
-            crit_RP_hold = unique(d[findall(x -> x > 0,range_DWS_hold[3])])
-        end
-
-        ## Controlling if number of RP is higher than specified
-        if length(crit_RP_hold) > nRP
-            crit_RP_hold = copy(crit_RP_hold[1:nRP])
-        end
-
-        # Trying to decrease W+S percentile
-        stop_aux = 0
-        while stop_aux < 1
-            # Update pD
-            pD_aux = pD_aux + pace
-            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-            if length(crit_RP_aux) != length(crit_RP_hold)
-                pD_aux = pD_aux - pace
-                stop_aux = 1
-            end
-        end
-
-        # Trying to increase the Demand percentile
-        stop_aux = 0
-        while stop_aux < 1
-            # Update pWS
-            pWS_aux = pWS_aux - pace
-            (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-            crit_RP_aux = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-            if length(crit_RP_aux) != length(crit_RP_hold)
-                pWS_aux = pWS_aux + pace
-                stop_aux = 1
-            end
-        end
-    end
-
-    (range_D_aux, range_WS_aux, range_DWS_aux) = find_crit_DWS(pD_aux,pWS_aux,D.*max_load'.*dem_inc',W,S,nodes)
-    crit_RP_aux_ret = unique(d[findall(x -> x > 0,range_DWS_aux[3])])
-
-    # Return with the percentiles used
-    range_D_aux_ret = range_D_aux
-    range_WS_aux_ret = range_WS_aux
-    range_DWS_aux_ret = range_DWS_aux
-
-    if crit_RP_hold != crit_RP_aux_ret
-        println("\n Diferent RP! Check code. \n")
-    end
-
-    return range_D_ret, range_WS_ret, range_DWS_ret, crit_RP_ret,
-    range_D_aux_ret, range_WS_aux_ret, range_DWS_aux_ret, crit_RP_aux_ret
-end
 
 ### Execut RDCCP approach
 function run_RDCCP_3D(

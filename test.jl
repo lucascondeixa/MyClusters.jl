@@ -28,6 +28,8 @@ pD = 0.01                           # Percentile to find the critical points in 
 pWS = 0.99                          # Percentile to find the critical points in WS
 pace = 0.0005
 RP = 50
+pD_crit = 0.75
+pWS_crit = 0.25
 
 ## Load instances
 cases = ["SP", "DK", "DE"]
@@ -88,9 +90,27 @@ function test_crit_RP()
     @assert a[8] == aux[:]
 end
 
-load_cases()
-# test_kmeans()
-# test_HCnD()
-test_crit_RP()
+## Test of HCnD using a reduced DWS[1:50,:]
+function test_find_crit_DWS()
+    cd("examples")
+    a = find_crit_DWS(pD_crit,pWS_crit,D,W,S,nodes)
+    # writedlm(string("find_crit_DWS_pD_",pD_crit,"_pWS_",pWS_crit,".txt"),a[3][3])
+    aux = readdlm(string("find_crit_DWS_pD_",pD_crit,"_pWS_",pWS_crit,".txt"))
+    cd("..")
+    @assert a[3][3] == aux[:]
+end
+
+
+## Exec...
+println("\nLoading cases...")
+@time load_cases()
+println("\nTesting kmeans...")
+@time test_kmeans()
+println("\nTesting HCnD...")
+@time test_HCnD()
+println("\nTesting crit_RP...")
+@time test_crit_RP()
+println("\nTesting find_crit_DWS...")
+@time test_find_crit_DWS()
 
 # End of Code
