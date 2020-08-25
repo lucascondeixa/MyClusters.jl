@@ -2,14 +2,16 @@
 ###### NOTE: These packages might be needed, uncomment them accordingly
 ###### to the use:
 
-# Pkg.add("Gurobi")
-# Pkg.add("StatPlots")
-# Pkg.add("JuMP")
-# Pkg.add("GR")
-# Pkg.add("Distances")
-# Pkg.add("DataFrames")
-# Pkg.add("CSV")
-# Pkg.add("StatsBase")
+Pkg.add("Gurobi")
+Pkg.add("CPLEX")
+Pkg.add("StatPlots")
+Pkg.add("JuMP")
+Pkg.add("GR")
+Pkg.add("Distances")
+Pkg.add("DataFrames")
+Pkg.add("CSV")
+Pkg.add("StatsBase")
+Pkg.add("Dates")
 
 ###### NOTE: parallelization
 # Threads.nthreads()
@@ -30,6 +32,7 @@
 # using IndexedTables
 # using StatPlots
 using Distributed
+@everywhere using Dates
 @everywhere using Suppressor
 @everywhere using SharedArrays
 @everywhere using StatsBase
@@ -257,7 +260,7 @@ function HCnD(k::Int64,
     end
 
 	for j in n:-1:k+1
-        texec = now()
+        # texec = now()
         # println("\nj is: $j / $texec")
 
         tini = time()
@@ -265,7 +268,8 @@ function HCnD(k::Int64,
         if j == l
 
     		#Distances matrix designation
-            if dm == 1
+            if dm == 1                          # WD
+                # println("\nDisc. measure: Wass. Distance")
         		for i in 1:(l-1)
                     ## Create a centroids aux array to deal with the aggregation to
                     ## be tested (passing through each hour/cluster i)
@@ -296,7 +300,8 @@ function HCnD(k::Int64,
                                   ## Sum of WD from the n*d dimensions
                                   EMD_nD(k_cent[range_eval,:,:], k_cent_aux[range_eval,:,:])
         		end
-            else
+            else                                # ED
+                # println("\nDisc. measure: Euc. Distance")
                 for i in 1:(l-1)
         			dist[i] = 2 * length(class[class[:] .== i]) *
         					   	  length(class[class[:] .== i+1]) /
