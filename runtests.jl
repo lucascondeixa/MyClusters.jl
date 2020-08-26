@@ -5,6 +5,7 @@ include("myclusters_github.jl")
 include("test_func.jl")
 
 using DelimitedFiles
+using Test
 
 ## Test objects
 nodes = 3
