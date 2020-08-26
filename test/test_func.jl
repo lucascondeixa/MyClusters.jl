@@ -1,4 +1,4 @@
-include("myclusters_github.jl")
+include("myclusters.jl")
 using Test
 
 ## Load instances

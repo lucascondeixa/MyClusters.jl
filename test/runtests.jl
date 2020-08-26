@@ -1,7 +1,7 @@
 cd(@__DIR__)
 push!(LOAD_PATH, dirname(@__DIR__))
 
-include("myclusters_github.jl")
+include("myclusters.jl")
 include("test_func.jl")
 
 using DelimitedFiles

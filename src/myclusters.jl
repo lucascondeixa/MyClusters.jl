@@ -1,17 +1,5 @@
-
 ###### NOTE: These packages might be needed, uncomment them accordingly
 ###### to the use:
-
-Pkg.add("Gurobi")
-Pkg.add("CPLEX")
-Pkg.add("StatPlots")
-Pkg.add("JuMP")
-Pkg.add("GR")
-Pkg.add("Distances")
-Pkg.add("DataFrames")
-Pkg.add("CSV")
-Pkg.add("StatsBase")
-Pkg.add("Dates")
 
 ###### NOTE: parallelization
 # Threads.nthreads()
