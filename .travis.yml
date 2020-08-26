@@ -11,3 +11,4 @@ branches:
 coveralls: true
 notifications:
   email: false
+- julia -e 'using Pkg'
