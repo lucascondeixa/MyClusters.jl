@@ -9,7 +9,8 @@ branches:
   only:
     - master
 coveralls: true
-notifications:
-  email: false
 script:
   - julia -e 'using Pkg'
+  - julia --project=test test/runtests.jl
+notifications:
+  email: false
