@@ -10,7 +10,9 @@ branches:
     - master
 coveralls: true
 script:
-  - julia -e 'using Pkg'
-  - julia --project=test test/runtests.jl
+  - julia --project=test/ -e 'using Pkg; Pkg.instantiate();
+                                    Pkg.develop(PackageSpec(path=pwd()))'
+  - julia --project=test/ test/runtests.jl
+  after_success: skip
 notifications:
   email: false
