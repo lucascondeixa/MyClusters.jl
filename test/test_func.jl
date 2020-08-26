@@ -62,11 +62,13 @@ end
 
 ## Test of HCnD using a reduced DWS[1:50,:]
 function test_HCnD_ED()
+    cd("..")
     cd("examples")
     a = HCnD(1,2,D[1:50,:],W[1:50,:],S[1:50,:])
     # writedlm("HCnD_ED_50.txt",a[1])
     aux = readdlm("HCnD_ED_50.txt")
     cd("..")
+    cd("test")
     @test a[1] == aux
 end
 
