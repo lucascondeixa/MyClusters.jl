@@ -1,5 +1,4 @@
-###### NOTE: These packages might be needed, uncomment them accordingly
-###### to the use:
+module MyClusters
 
 ###### NOTE: parallelization
 # Threads.nthreads()
@@ -32,6 +31,21 @@ using Distributed
 @everywhere using Distances
 @everywhere using CSV
 @everywhere using Random
+
+export Arc,
+HCnD,
+crit_RP,
+find_crit_DWS,
+RDC3D_new,
+EMD_nD,
+aggreg,
+red_clust,
+CTEM_int,
+CTEM_clus,
+run_RDCCP_3D,
+fix_cap,
+CEM_int,
+CEM_clus
 
 # Type for arcs (i,j)
 struct Arc
@@ -700,381 +714,6 @@ function RDC3D_new(k::Int64,
     return class_ret, k_cent_ret, times_ret, n_clusters
 end
 
-### Compute Wass. Dist in 2D series
-function wassdist2D(from::Array{Float64},
-    to::Array{Float64})
-
-    #### NOTE: uncomment this to check if the distributions' mass match
-    # for d in 1:2
-    #     if sum(from[:,d]) != sum(to[:,d])
-    #         println("\n Arrays with differente mass in dimension $d \n")
-    #         # return
-    #     end
-    # end
-    ##__________________________________________________________________________
-    ##### Probabilistic Distance based on Wasserstein distance
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1])
-
-    #-------------------------------------------------------------------------------
-    # Optimisation model formulation
-    #-------------------------------------------------------------------------------
-
-    model = Model(CPLEX.Optimizer)
-
-    #-------------------------------------------------------------------------------
-    ##Sets
-    #-------------------------------------------------------------------------------
-
-    I = collect(1:n)            # Original distribution
-    J = collect(1:n)            # Adapted distribution
-    K = collect(1:2)    		# Number of dimensions
-
-    #-------------------------------------------------------------------------------
-    ##Parameters
-    #-------------------------------------------------------------------------------
-
-    P_i = copy(from)
-    P_j = copy(to)
-
-    #-------------------------------------------------------------------------------
-    ##Variables
-    #-------------------------------------------------------------------------------
-
-    @variable(model,eta[i = 1:I[end], j = 1:J[end], k = 1:K[end]] >= 0)
-
-    #-------------------------------------------------------------------------------
-    ##Constraints (Model C)
-    #-------------------------------------------------------------------------------
-
-    @constraint(model,[i in I, k in K],  P_i[i,k] == sum(eta[i,j,k] for j in J))
-    @constraint(model,[j in J, k in K],  P_j[j,k] == sum(eta[i,j,k] for i in I))
-
-    #-------------------------------------------------------------------------------
-    ##Objective Function
-    #-------------------------------------------------------------------------------
-
-    @objective(model, Min, sum(abs(i-j)*eta[i,j,k] for i in I, j in J, k in K))
-
-    # status = @suppress solve(model)
-
-    #Get the values of costs against number of clusters
-    out = objective_value(model)
-
-    return out
-end
-
-
-### Compute Wass. Dist in nD series
-function wassdist_new(from::Array{Float64},
-    to::Array{Float64},
-    dist::Int64)
-
-    ## Algorithm to compute the Wasserstein distance from a vector  called
-    # "from" and another vector named "to". The distance between active nodes
-    # cannot surpass the limit established by "dist"
-
-    ##__________________________________________________________________________
-    ##### Probabilistic Distance based on Wasserstein distance
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1])
-
-    if dist > (n-1)
-        println("Inconsistent difference between time steps")
-        return
-    end
-
-    ### Building the diagonal matrix
-    from_to = Int.(zeros(n,n))
-    for i in 1:n
-        for j in 1:n
-            if abs(i-j) <= dist
-                from_to[i,j] = 1
-            end
-        end
-    end
-
-    # Counting the number of elements
-    counter = sum(from_to)
-
-    # Building the matrix with active elements
-    aux1 = from_to[[i for i = 1:n*n]].*collect(1:n*n)
-    active = aux1[aux1 .!= 0]
-
-    # Creating i -> j structure
-    inode = Int.(zeros(counter))
-    jnode = Int.(zeros(counter))
-
-    # Filling (i,j) arcs
-    for i in 1:counter
-        jnode[i] = div(active[i]-1,n)+1
-        inode[i] = rem(active[i]-1,n)+1
-    end
-
-    # Construct arcs set
-    A = Arc.(inode, jnode)
-
-    #-------------------------------------------------------------------------------
-    # Optimisation model formulation
-    #-------------------------------------------------------------------------------
-
-    model = Model(Gurobi.Optimizer)  #Using dual simplex (Algorithm 1)
-
-    #-------------------------------------------------------------------------------
-    ##Sets
-    #-------------------------------------------------------------------------------
-
-    I = collect(1:n)            # Original distribution
-    J = collect(1:n)            # Adapted distribution
-
-    #-------------------------------------------------------------------------------
-    ##Parameters
-    #-------------------------------------------------------------------------------
-
-    P_i = copy(from)
-    P_j = copy(to)
-
-    #-------------------------------------------------------------------------------
-    ##Variables
-    #-------------------------------------------------------------------------------
-
-    @variable(model,eta[A]>=0)
-
-    #-------------------------------------------------------------------------------
-    ##Constraints (Model C)
-    #-------------------------------------------------------------------------------
-
-    @constraint(model,[i in I], P_i[i] == sum(eta[a] for a in A if a.i == i))
-    @constraint(model,[j in J], P_j[j] == sum(eta[a] for a in A if a.j == j))
-
-    #-------------------------------------------------------------------------------
-    ##Objective Function
-    #-------------------------------------------------------------------------------
-
-    costs = zeros(length(A))
-
-    for a in 1:length(A)
-        costs[a] = abs(A[a].i-A[a].j)
-    end
-
-    @objective(model, Min, sum(costs[a]*eta[Arc(A[a].i,A[a].j)] for a in 1:length(A)))
-
-    status = @suppress optimize!(model)
-
-    #Get the values of costs against number of clusters
-    out = objective_value(model)
-
-    return out
-end
-
-### Compute Wass. Dist in nD series (final version)
-function wassdist_vf(from::Array{Float64},
-    to::Array{Float64},
-    dist::Int64)
-
-    ## Algorithm to compute the Wasserstein distance from a vector  called
-    # "from" and another vector named "to". The distance between active nodes
-    # cannot surpass the limit established by "dist"
-
-    ##__________________________________________________________________________
-    ##### Probabilistic Distance based on Wasserstein distance
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1])
-
-    if dist > (n-1)
-        println("Inconsistent difference between time steps")
-        return
-    end
-
-    #-------------------------------------------------------------------------------
-    # Optimisation model formulation
-    #-------------------------------------------------------------------------------
-
-    model = Model(Gurobi.Optimizer)  #Using dual simplex (Algorithm 1)
-
-    #-------------------------------------------------------------------------------
-    ##Sets
-    #-------------------------------------------------------------------------------
-
-    I = collect(1:n)            # Original distribution
-    J = collect(1:n)            # Adapted distribution
-
-    #-------------------------------------------------------------------------------
-    ##Parameters
-    #-------------------------------------------------------------------------------
-
-    P_i = copy(from)
-    P_j = copy(to)
-
-    #-------------------------------------------------------------------------------
-    ##Variables
-    #-------------------------------------------------------------------------------
-
-    @variable(model,eta[i in I, j in J ; abs(i-j) <= dist]>=0)
-
-    #-------------------------------------------------------------------------------
-    ##Constraints (Model C)
-    #-------------------------------------------------------------------------------
-
-    @constraint(model,[i in I], P_i[i] == sum(eta[i,j] for j in J if abs(i-j)<=dist))
-    @constraint(model,[j in J], P_j[j] == sum(eta[i,j] for i in I if abs(i-j)<=dist))
-
-    #-------------------------------------------------------------------------------
-    ##Objective Function
-    #-------------------------------------------------------------------------------
-
-    @objective(model, Min, sum(abs(i-j)*eta[i,j] for i in I, j in J if abs(i-j)<=dist))
-
-    status = @suppress optimize!(model)
-
-    #Get the values of costs against number of clusters
-    out = objective_value(model)
-
-    return out
-end
-
-function EMD_effic(from::Array{Float64},
-    to::Array{Float64})
-
-    ## Algorithm to compute the Wasserstein distance (or Earth Mover's Distance)
-    # from a vector called "from" and another vector named "to". The distance
-    # between active nodes cannot surpass the limit established by "dist"
-
-    ##__________________________________________________________________________
-    ##### Probabilistic Distance computation based on the algorithm proposed
-    ## by (Ling and Okada, 2007: An Efficient Earth Mover’s Distance Algorithm
-    ## for Robust Histogram Comparison)
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1])
-
-
-    #-------------------------------------------------------------------------------
-    # Optimisation model formulation
-    #-------------------------------------------------------------------------------
-
-    model = Model(Gurobi.Optimizer)  #Using dual simplex (Algorithm 1)
-
-    #-------------------------------------------------------------------------------
-    ##Sets
-    #-------------------------------------------------------------------------------
-
-    I = collect(1:n)            # Original distribution
-    J = collect(1:n)            # Adapted distribution
-
-
-    #-------------------------------------------------------------------------------
-    ##Parameters
-    #-------------------------------------------------------------------------------
-
-    P_i = copy(from)
-    P_j = copy(to)
-
-    #-------------------------------------------------------------------------------
-    ##Variables
-    #-------------------------------------------------------------------------------
-
-    @variable(model,eta[i in I, j in J ; abs(i-j) <= 1]>=0)
-
-    #-------------------------------------------------------------------------------
-    ##Constraints (Model C)
-    #-------------------------------------------------------------------------------
-
-    @constraint(model,[i in I],
-    sum(eta[i,j] for j in J if abs(i-j)<=1) - sum(eta[j,i] for j in J if abs(i-j)<=1)
-    == from[i] - to[i])
-
-    #-------------------------------------------------------------------------------
-    ##Objective Function
-    #-------------------------------------------------------------------------------
-
-    @objective(model, Min, sum(abs(i-j)*eta[i,j] for i in I, j in J if abs(i-j)<=1))
-
-    status = @suppress optimize!(model)
-
-    #Get the values of costs against number of clusters
-    out = objective_value(model)
-
-    return out
-end
-
-### Compute Wass. Dist in 3D series (efficient version)
-function EMD_3D(from::Array{Float64},
-    to::Array{Float64})
-
-    ## Algorithm to compute the adaptive Wasserstein distance (or Earth Mover's
-    # Distance) from a vector called "from" (which represents the original
-    # series) and another vector named "to" (adapted series).
-
-    ##__________________________________________________________________________
-    ##### Probabilistic Distance computation based on the algorithm proposed
-    ## by (Ling and Okada, 2007: An Efficient Earth Mover’s Distance Algorithm
-    ## for Robust Histogram Comparison)
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1,1])             # (number of hours)
-    m = length(from[1,:,1])             # (number of nodes)
-    s = length(from[1,1,:])             # (number of series - DWS)
-
-    #-------------------------------------------------------------------------------
-    # Optimisation model formulation
-    #-------------------------------------------------------------------------------
-
-    model = Model(Gurobi.Optimizer)  #Using dual simplex (Algorithm 1)
-
-    #-------------------------------------------------------------------------------
-    ##Sets
-    #-------------------------------------------------------------------------------
-
-    I = collect(1:n)            # Original distribution
-    J = collect(1:n)            # Adapted distribution
-    K = collect(1:m)            # Nodes
-    R = collect(1:s)            # Dimensions (D,W,S)
-
-    #-------------------------------------------------------------------------------
-    ##Parameters
-    #-------------------------------------------------------------------------------
-
-    P_i = copy(from)
-    P_j = copy(to)
-
-    #-------------------------------------------------------------------------------
-    ##Variables
-    #-------------------------------------------------------------------------------
-
-    @variable(model,eta[i in I, j in J, k in K, r in R ; abs(i-j) <= 1]>=0)
-
-    #-------------------------------------------------------------------------------
-    ##Constraints (Model C)
-    #-------------------------------------------------------------------------------
-
-    @constraint(model,[i in I, k in K, r in R],
-    sum(eta[i,j,k,r] for j in J if abs(i-j)<=1) - sum(eta[j,i,k,r] for j in J if abs(i-j)<=1)
-    == from[i,k,r] - to[i,k,r])
-
-    #-------------------------------------------------------------------------------
-    ##Objective Function
-    #-------------------------------------------------------------------------------
-
-    @objective(model, Min, sum(abs(i-j)*eta[i,j,k,r] for i in I, j in J, k in K, r in R
-    if abs(i-j)<=1))
-
-    status = @suppress optimize!(model)
-
-    #Get the values of costs against number of clusters
-    out = objective_value(model)
-
-    return out
-end
-
 ### Compute Wass. Dist in nD series (auxiliar version)
 function EMD_nD(from::Array{Float64},
     to::Array{Float64})
@@ -1145,67 +784,6 @@ function EMD_nD(from::Array{Float64},
     return out
 end
 
-function pm_wass_computation(D::Array{Float64},
-    W::Array{Float64},
-    S::Array{Float64},
-    m::Array{Int64},
-    pm_wassd_P::Vector{Any},
-    pm_wassd_W::Vector{Any},
-    pm_P_centroids::Vector{Any},
-    pm_W_centroids::Vector{Any},
-    step::Int64,
-    dist::Int64,
-    month_from::Int64,
-    month_to::Int64)
-
-    for k in month_from:month_to
-        for i in 1:step:length(D[m.==k])
-            pm_wassd_P[k][i,1] = wassdist_new(D[m.==k],pm_P_centroids[k][i,:,1],dist)
-            pm_wassd_P[k][i,2] = wassdist_new(W[m.==k],pm_P_centroids[k][i,:,2],dist)
-            pm_wassd_P[k][i,3] = wassdist_new(S[m.==k],pm_P_centroids[k][i,:,3],dist)
-            pm_wassd_W[k][i,1] = wassdist_new(D[m.==k],pm_W_centroids[k][i,:,1],dist)
-            pm_wassd_W[k][i,2] = wassdist_new(W[m.==k],pm_W_centroids[k][i,:,2],dist)
-            pm_wassd_W[k][i,3] = wassdist_new(S[m.==k],pm_W_centroids[k][i,:,3],dist)
-
-            if pm_wassd_P[k][i,1] > 0 && pm_wassd_P[k][i,2] > 0 && pm_wassd_P[k][i,3] > 0
-                pm_wassd_P_total[k][i] = pm_wassd_P[k][i,1] + pm_wassd_P[k][i,2] + pm_wassd_P[k][i,3]
-            end
-
-            if pm_wassd_W[k][i,1] > 0 && pm_wassd_W[k][i,2] > 0 && pm_wassd_W[k][i,3] > 0
-                pm_wassd_W_total[k][i] = pm_wassd_W[k][i,1] + pm_wassd_W[k][i,2] + pm_wassd_W[k][i,3]
-            end
-        end
-    end
-end
-
-function EMD_computation_n_nodes(nodes::Int64,
-    Cluss::UnitRange{Int64},
-    D::Array{Float64},
-    W::Array{Float64},
-    S::Array{Float64},
-    P_centroids_DWS::Array{Float64})
-
-    wassd_P = zeros(length(Cluss))
-    wassd_aux = zeros(length(Cluss),3,3)
-
-    for i in Cluss
-        # println("Cluster level is: ", i," at ", now(), "\n")
-        for j in 1:nodes
-            wassd_aux[i,j,1] = EMD_effic(D[:,j],P_centroids_DWS[i,:,j,1])
-            wassd_aux[i,j,2] = EMD_effic(W[:,j],P_centroids_DWS[i,:,j,2])
-            wassd_aux[i,j,3] = EMD_effic(S[:,j],P_centroids_DWS[i,:,j,3])
-        end
-        if sum(wassd_aux[:,:,1]) > 0 &&
-            sum(wassd_aux[:,:,2]) > 0 &&
-            sum(wassd_aux[:,:,3]) > 0
-            wassd_P[i] = sum(wassd_aux[i,:,:])
-        end
-    end
-
-    return wassd_P, wassd_aux
-end
-
-
 ##### Cluster aggregation function
 function aggreg(a₁::Array{Float64},
     sizes::Array{Int64}, marker::Array{Int64})
@@ -1251,354 +829,6 @@ function aggreg(a₁::Array{Float64},
     return new_a₁, class
 end
 
-function cond2D_short(k::Int64,
-	a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-	## Clustering modelling inpired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if length(a₁) != length(a₂)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy([a₁ a₂])              # Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	δ = 10^-5                           # Small increment
-    sizes = ones(Int64,n)               # Sizes of each cluster
-    class_ret = Array{Float64}(undef,n,n)  # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,2) # Output (2)
-    times_ret = Array{Float64}(undef,n)     #Output (3)
-
-	for j in n:-1:k+1
-        # texec = now()
-        # println("j = $j / Time: $texec \n")
-
-        tini = time()
-
-        if j == l
-
-            #Distances matrix designation
-            for i in 1:(l-1)
-                new_class = copy(class)                 # Aux
-                new_k_cent = copy(k_cent)               # Aux
-                new_k_class = collect(1:l)              # Aux
-
-                ##Create a vector with a aggregation marker in i
-                aux = zeros(Int64,l)
-                aux[i] = 1
-
-                ##Create momentary classes and k_centers
-                new_k_class = aggreg(k_cent[1:l,1],sizes[1:l],aux)[2]
-                change_class = new_k_class - collect(1:l)
-                new_class = class + change_class[class]
-
-                for i in 1:l
-                	new_k_cent[i,1] = mean(a₁[new_class[:] .== i])
-                    new_k_cent[i,2] = mean(a₂[new_class[:] .== i])
-                end
-
-                dist[i] = wassdist2D([a₁ a₂],
-                new_k_cent[new_class,:])
-            end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l]) + δ
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-            marker_p = marker[marker.==1]
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-    			k_cent[i,1] = mean(a₁[class[:] .== i])
-                k_cent[i,2] = mean(a₂[class[:] .== i])
-                sizes[i] = sum(class[:] .== i)
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-    		l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-        end
-        Δt = time() - tini
-        times_ret[j] = Δt
-    end
-
-    class_ret[n,:] = collect(1:n)
-    k_cent_ret[n,:,:] = copy([a₁ a₂])
-
-	return class_ret, k_cent_ret, times_ret
-end
-
-function cond2D_v2(k::Int64,
-	a₁::Vector{Float64},
-    a₂::Vector{Float64})
-
-	## Clustering modelling inspired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if length(a₁) != length(a₂)
-        println("Different sizes input")
-        return
-    end
-
-	### Initialization
-	n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy([a₁ a₂])              # Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	δ = 10^-5                           # Small increment
-    sizes = ones(Int64,n)               # Sizes of each cluster
-    class_ret = Array{Float64}(undef,n,n)  # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,2) # Output (2)
-    times_ret = Array{Float64}(undef,n)     #Output (3)
-
-	for j in n:-1:k+1
-
-        tini = time()
-
-        if j == l
-
-            #Distances matrix designation
-            for i in 1:(l-1)
-                new_class = copy(class)                 # Aux
-                new_k_cent = copy(k_cent)               # Aux
-                new_k_class = collect(1:l)              # Aux
-
-                ##Create a vector with a aggregation marker in i
-                aux = zeros(Int64,l)
-                aux[i] = 1
-
-                ##Create momentary classes and k_centers
-                new_k_class = aggreg(k_cent[1:l,1],sizes[1:l],aux)[2]
-                change_class = new_k_class - collect(1:l)
-                new_class = class + change_class[class]
-
-                for i in 1:l
-                	new_k_cent[i,1] = mean(a₁[new_class[:] .== i])
-                    new_k_cent[i,2] = mean(a₂[new_class[:] .== i])
-                end
-
-                dist[i] = wassdist2D([a₁ a₂],
-                new_k_cent[new_class,:])
-            end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l]) + δ
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-            marker_p = marker[marker.==1]
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-    			k_cent[i,1] = mean(a₁[class[:] .== i])
-                k_cent[i,2] = mean(a₂[class[:] .== i])
-                sizes[i] = sum(class[:] .== i)
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-    		l = l + Int(c_change)
-
-        else
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-        end
-        Δt = time() - tini
-        times_ret[j] = Δt
-    end
-
-    class_ret[n,:] = collect(1:n)
-    k_cent_ret[n,:,:] = copy([a₁ a₂])
-
-	return class_ret, k_cent_ret, times_ret
-end
-
-function cond3D_new(k::Int64,
-	a₁::Vector{Float64},
-    a₂::Vector{Float64},
-    a₃::Vector{Float64})
-
-	## Clustering modelling inspired by the article named "Chronological
-    ## Time-Period Clustering for Optimal Capacity Expansion Planning
-    ## With Storage" by Salvador Pineda & Juan Morales (2018)
-
-    if length(a₁) != length(a₂)
-        println("Different sizes input between a₁ and a₂")
-        return
-    elseif length(a₁) != length(a₃)
-        println("Different sizes input between a₁ and a₃")
-        return
-    end
-
-	### Initialization
-    num_dims = 3
-    n = length(a₁)						# Size of Data
-	class = collect(1:n)				# Array of classes (n)
-	k_cent = copy([a₁ a₂ a₃])           # Centroids array
-	dist = zeros(n)						# Array of distances (n)
-	l = length(a₁)						# Number of clusters used
-	δ = 10^-5                           # Small increment
-    counter = 0							        # Control the number of iterations
-    sizes = ones(Int64,n)               # Sizes of each cluster
-    class_ret = Array{Float64}(undef,n,n)  # Output (1)
-    k_cent_ret = Array{Float64}(undef,n,n,num_dims) # Output (2)
-    times_ret = Array{Float64}(undef,n)     #Output (3)
-
-	for j in n:-1:k+1
-        texec = now()
-        # println("j is: $j / $texec")
-
-        tini = time()
-
-        if j == l
-
-            #Distances matrix designation
-            for i in 1:(l-1)
-                new_class = copy(class)                 # Aux
-                new_k_cent = copy(k_cent)               # Aux
-                new_k_class = collect(1:l)              # Aux
-
-                ##Create a vector with an aggregation marker in i
-                aux = zeros(Int64,l)
-                aux[i] = 1
-
-                ##Create momentary classes and k_centers
-                new_k_class = aggreg(k_cent[1:l,1],sizes[1:l],aux)[2]
-                change_class = new_k_class - collect(1:l)
-                new_class = class + change_class[class]
-
-                for i in 1:l
-                	new_k_cent[i,1] = mean(a₁[new_class[:] .== i])
-                    new_k_cent[i,2] = mean(a₂[new_class[:] .== i])
-                    new_k_cent[i,3] = mean(a₃[new_class[:] .== i])
-                end
-
-                if length(a₁)>= 47
-                    dist[i] = wassdist_new([a₁ a₂ a₃],
-                    new_k_cent[new_class,:],47)
-                else
-                    dist[i] = wassdist_new([a₁ a₂ a₃],
-                    new_k_cent[new_class,:],length(a₁)-1)
-                end
-            end
-
-    		# Updating the last value for the max
-    		dist[l] = maximum(dist[1:l]) + δ
-
-    		# min: find the minimum distances
-    		min_dist = findall(x -> x == minimum(dist[1:l]),dist[1:l])
-
-    		marker = zeros(n)					# To mark whenever the minimum occurs
-
-    		##Mark as 1 whenever a minimum happens
-    		for i in 1:(n-1)
-    			if (class[i] in min_dist) && (class[i] != class[i+1])
-    				marker[i+1] = 1
-    			end
-    		end
-
-            marker_p = marker[marker.==1]
-
-    		##Accounts the cumulative change in clusters order
-    		c_change = 0						# Change in the number of clusters
-    		for i in 1:n
-    			c_change = c_change - marker[i]
-    			marker[i] = c_change
-    		end
-
-    		##Update values
-    		class[:] = class[:] + marker[:]
-
-    		##Update centroids
-    		for i in 1:l
-    			k_cent[i,1] = mean(a₁[class[:] .== i])
-                k_cent[i,2] = mean(a₂[class[:] .== i])
-                k_cent[i,3] = mean(a₃[class[:] .== i])
-                sizes[i] = sum(class[:] .== i)
-    		end
-
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-    		l = l + Int.(c_change)
-
-        else
-
-            #Branch for unused clusters
-            class_ret[j-1,:] = class
-            k_cent_ret[j-1,:,:] = copy(k_cent)
-
-        end
-        Δt = time() - tini
-        times_ret[j] = Δt
-    end
-
-    class_ret[n,:] = collect(1:n)
-    k_cent_ret[n,:,:] = copy([a₁ a₂ a₃])
-
-	return class_ret, k_cent_ret, times_ret
-end
-
 function red_clust(h_min::Int64,pm_P_clusters::Vector{Any},mode::Int64)
     ## Mode: 1-Dem; 2-Wind; 3-Solar
     red_cent = Array{Float64}(undef,h_min,h_min*12)
@@ -1614,74 +844,66 @@ function red_clust(h_min::Int64,pm_P_clusters::Vector{Any},mode::Int64)
 
         red_cent[i,1:12i] = [
 
-        append!(pm_P_centroids[1][i,
-        findfirst.(isequal.(unique(pm_P_clusters[1][i,:])),
-        [pm_P_clusters[1][i,:]]),mode],zeros(Float64,aux[1]))
-
-        append!(pm_P_centroids[2][i,
-        findfirst.(isequal.(unique(pm_P_clusters[2][i,:])),
-        [pm_P_clusters[2][i,:]]),mode],zeros(Float64,aux[2]))
-
-        append!(pm_P_centroids[3][i,
-        findfirst.(isequal.(unique(pm_P_clusters[3][i,:])),
-        [pm_P_clusters[3][i,:]]),mode],zeros(Float64,aux[3]))
-
-        append!(pm_P_centroids[4][i,
-        findfirst.(isequal.(unique(pm_P_clusters[4][i,:])),
-        [pm_P_clusters[4][i,:]]),mode],zeros(Float64,aux[4]))
-
-        append!(pm_P_centroids[5][i,
-        findfirst.(isequal.(unique(pm_P_clusters[5][i,:])),
-        [pm_P_clusters[5][i,:]]),mode],zeros(Float64,aux[5]))
-
-        append!(pm_P_centroids[6][i,
-        findfirst.(isequal.(unique(pm_P_clusters[6][i,:])),
-        [pm_P_clusters[6][i,:]]),mode],zeros(Float64,aux[6]))
-
-        append!(pm_P_centroids[7][i,
-        findfirst.(isequal.(unique(pm_P_clusters[7][i,:])),
-        [pm_P_clusters[7][i,:]]),mode],zeros(Float64,aux[7]))
-
-        append!(pm_P_centroids[8][i,
-        findfirst.(isequal.(unique(pm_P_clusters[8][i,:])),
-        [pm_P_clusters[8][i,:]]),mode],zeros(Float64,aux[8]))
-
-        append!(pm_P_centroids[9][i,
-        findfirst.(isequal.(unique(pm_P_clusters[9][i,:])),
-        [pm_P_clusters[9][i,:]]),mode],zeros(Float64,aux[9]))
-
-        append!(pm_P_centroids[10][i,
-        findfirst.(isequal.(unique(pm_P_clusters[10][i,:])),
-        [pm_P_clusters[10][i,:]]),mode],zeros(Float64,aux[10]))
-
-        append!(pm_P_centroids[11][i,
-        findfirst.(isequal.(unique(pm_P_clusters[11][i,:])),
-        [pm_P_clusters[11][i,:]]),mode],zeros(Float64,aux[11]))
-
-        append!(pm_P_centroids[12][i,
-        findfirst.(isequal.(unique(pm_P_clusters[12][i,:])),
-        [pm_P_clusters[12][i,:]]),mode],zeros(Float64,aux[12]))
+        for j in 1:12
+            append!(pm_P_centroids[j][i,
+            findfirst.(isequal.(unique(pm_P_clusters[j][i,:])),
+            [pm_P_clusters[j][i,:]]),mode],zeros(Float64,aux[j]))
+        end
 
         ]
+
+        # append!(pm_P_centroids[1][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[1][i,:])),
+        # [pm_P_clusters[1][i,:]]),mode],zeros(Float64,aux[1]))
+        #
+        # append!(pm_P_centroids[2][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[2][i,:])),
+        # [pm_P_clusters[2][i,:]]),mode],zeros(Float64,aux[2]))
+        #
+        # append!(pm_P_centroids[3][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[3][i,:])),
+        # [pm_P_clusters[3][i,:]]),mode],zeros(Float64,aux[3]))
+        #
+        # append!(pm_P_centroids[4][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[4][i,:])),
+        # [pm_P_clusters[4][i,:]]),mode],zeros(Float64,aux[4]))
+        #
+        # append!(pm_P_centroids[5][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[5][i,:])),
+        # [pm_P_clusters[5][i,:]]),mode],zeros(Float64,aux[5]))
+        #
+        # append!(pm_P_centroids[6][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[6][i,:])),
+        # [pm_P_clusters[6][i,:]]),mode],zeros(Float64,aux[6]))
+        #
+        # append!(pm_P_centroids[7][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[7][i,:])),
+        # [pm_P_clusters[7][i,:]]),mode],zeros(Float64,aux[7]))
+        #
+        # append!(pm_P_centroids[8][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[8][i,:])),
+        # [pm_P_clusters[8][i,:]]),mode],zeros(Float64,aux[8]))
+        #
+        # append!(pm_P_centroids[9][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[9][i,:])),
+        # [pm_P_clusters[9][i,:]]),mode],zeros(Float64,aux[9]))
+        #
+        # append!(pm_P_centroids[10][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[10][i,:])),
+        # [pm_P_clusters[10][i,:]]),mode],zeros(Float64,aux[10]))
+        #
+        # append!(pm_P_centroids[11][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[11][i,:])),
+        # [pm_P_clusters[11][i,:]]),mode],zeros(Float64,aux[11]))
+        #
+        # append!(pm_P_centroids[12][i,
+        # findfirst.(isequal.(unique(pm_P_clusters[12][i,:])),
+        # [pm_P_clusters[12][i,:]]),mode],zeros(Float64,aux[12]))
+        #
+        # ]
     end
 
     return red_cent
-end
-
-function RMSE(from::Array{Float64},
-    to::Array{Float64})
-
-    ##__________________________________________________________________________
-    ##### Root Mean Squared between two series
-    ##__________________________________________________________________________
-
-    ### Initialization
-    n = length(from[:,1])
-    accum = 0
-
-    accum = sum(sqrt.(((from - to).^2)./n))
-
-    return accum
 end
 
 function CTEM_int(
@@ -2225,64 +1447,10 @@ function CTEM_clus(
     sol_charg_clus, sol_discharg_clus
 end
 
-function compute_RMSE(
-    is_nodal::Bool,
-    Cluss::UnitRange{Int64},
-    s_clus_Gen_Inv::Array{Float64},
-    s_int_Gen_Inv::Array{Float64},
-    s_clus_Trans_Inv::Array{Float64},
-    s_int_Trans_Inv::Array{Float64},
-    s_clus_Stor_Inv::Array{Float64},
-    s_int_Stor_Inv::Array{Float64}
-    )
-
-    RMSE_P = zeros(length(Cluss))
-
-    if is_nodal
-        for l in Cluss
-            time_aux = now()
-            # println("l is $l in $time_aux")
-            RMSE_P[l] =
-            sum(sqrt.(sum((s_clus_Gen_Inv[l,t] .- s_int_Gen_Inv[t]).^2 for t in 1:5))) +
-            sum(sqrt.(sum((s_clus_Stor_Inv[l] .- s_int_Stor_Inv).^2)))
-        end
-    else
-        for l in Cluss
-            time_aux = now()
-            # println("l is $l in $time_aux")
-            RMSE_P[l] =
-            sum(sqrt.(sum((s_clus_Gen_Inv[l,t,:] .- s_int_Gen_Inv[t,:]).^2 for t in 1:5))) +
-            sum(sqrt.(sum((s_clus_Trans_Inv[l,:] .- s_int_Trans_Inv[:]).^2))) +
-            sum(sqrt.(sum((s_clus_Stor_Inv[l,:] .- s_int_Stor_Inv[:]).^2)))
-        end
-    end
-    return RMSE_P
-end
-
 ################################################################################
 ### NOTE: Nodal functions
 ################################################################################
 
-function compute_RMSE_inv_Nodal(
-    Cluss::UnitRange{Int64},
-    s_clus_Gen_Inv::Array{Float64},
-    s_int_Gen_Inv::Array{Float64},
-    s_clus_Stor_Inv::Array{Float64},
-    s_int_Stor_Inv::Array{Float64}
-    )
-
-    RMSE_P = zeros(length(Cluss))
-
-    for l in Cluss
-        time_aux = now()
-        # println("l is $l in $time_aux")
-        RMSE_P[l] =
-        sum(sqrt.(sum((s_clus_Gen_Inv[l,t] .- s_int_Gen_Inv[t]).^2 for t in 1:5))) +
-        sum(sqrt.(sum((s_clus_Stor_Inv[l] .- s_int_Stor_Inv).^2 for t in 1:5)))
-    end
-
-    return RMSE_P
-end
 
 function CEM_int(
     # nodes::Int64,
@@ -2976,7 +2144,6 @@ end
 ### NOTE: Data-driven functions
 ################################################################################
 
-
 ### Execut RDCCP approach
 function run_RDCCP_3D(
     pD::Float64,
@@ -3141,3 +2308,5 @@ function run_RDCCP_3D(
         s_RDCCP_Charg, s_RDCCP_Discharg
     end
 end
+
+end  #Module
