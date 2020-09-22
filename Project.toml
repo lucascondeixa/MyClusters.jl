@@ -1,0 +1,17 @@
+name = "MyClusters"
+uuid = "a18fcc41-b7bd-40eb-84cd-79c5a80eaa13"
+authors = ["Lucas <ldcondeixa@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+CPLEX = "a076750e-1247-5638-91d2-ce28b192dca0"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+DocumenterTools = "35a29f4d-8980-5a13-9543-d66fff28ecb8"
+Gurobi = "2e9cd046-0924-5485-92f1-d5272153d98b"
+JuMP = "4076af6c-e467-56ae-b986-b466b2749572"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+Suppressor = "fd094767-a336-5f1f-9728-57cf17d0bbfb"
