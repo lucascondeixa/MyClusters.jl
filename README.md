@@ -1,2 +1,2 @@
-# test_2020
-Testing github functionalities 2020
+# MyClusters
+Repository on clustering techniques applied to Energy Systems optimization problems.
